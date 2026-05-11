@@ -1,0 +1,67 @@
+@host = http://localhost:8080
+@adminToken = change-me
+
+### Service info
+GET {{host}}/
+
+### Health
+GET {{host}}/health
+
+### Prometheus metrics
+GET {{host}}/metrics
+
+### Upsert route with key in URL
+# This is the recommended request. The stream key is taken from the URL.
+PUT {{host}}/v1/routes/test-key
+Content-Type: application/json
+Authorization: Bearer {{adminToken}}
+
+{
+  "target": "rtmp://localhost:1936/live/test-target"
+}
+
+### Create route with key in request body
+POST {{host}}/v1/routes
+Content-Type: application/json
+Authorization: Bearer {{adminToken}}
+
+{
+  "streamKey": "test-key",
+  "target": "rtmp://localhost:1936/live/test-target"
+}
+
+### Get route
+GET {{host}}/v1/routes/test-key
+
+### List routes
+GET {{host}}/v1/routes
+
+### Delete route
+DELETE {{host}}/v1/routes/test-key
+Authorization: Bearer {{adminToken}}
+
+### List active RTMP sessions
+GET {{host}}/v1/sessions
+
+### Close active RTMP session
+# Replace the id before sending.
+DELETE {{host}}/v1/sessions/session-id-goes-here
+Authorization: Bearer {{adminToken}}
+
+### Invalid stream key example, should return 400
+PUT {{host}}/v1/routes/bad/key
+Content-Type: application/json
+Authorization: Bearer {{adminToken}}
+
+{
+  "target": "rtmp://localhost:1936/live/test-target"
+}
+
+### Invalid target example, should return 400
+PUT {{host}}/v1/routes/bad-target
+Content-Type: application/json
+Authorization: Bearer {{adminToken}}
+
+{
+  "target": "http://localhost/live/test-target"
+}
