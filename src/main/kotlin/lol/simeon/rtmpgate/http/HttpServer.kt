@@ -13,6 +13,7 @@ import io.ktor.server.netty.NettyApplicationEngine
 import io.ktor.server.plugins.calllogging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.statuspages.StatusPages
+import io.ktor.server.plugins.swagger.swaggerUI
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
@@ -55,6 +56,7 @@ class HttpServer(
     private fun Application.module() {
         installCorePlugins()
         routing {
+            swaggerRoutes()
             serviceRoutes()
             routeRoutes()
             sessionRoutes()
@@ -176,6 +178,13 @@ class HttpServer(
         call.respond(
             if (deleted) HttpStatusCode.OK else HttpStatusCode.NotFound,
             DeleteRouteResponse(deleted = deleted),
+        )
+    }
+
+    private fun Routing.swaggerRoutes() {
+        swaggerUI(
+            path = "swagger",
+            swaggerFile = "openapi/rtmpgate.yaml",
         )
     }
 

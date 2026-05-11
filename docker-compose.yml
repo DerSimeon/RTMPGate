@@ -8,8 +8,7 @@ services:
       - valkey-data:/data
 
   rtmpgate:
-    build:
-      context: .
+    image: ghcr.io/dersimeon/rtmpgate:latest
     depends_on:
       - valkey
     environment:

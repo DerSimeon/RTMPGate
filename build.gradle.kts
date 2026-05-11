@@ -24,6 +24,7 @@ dependencies {
     implementation(libs.ktor.serialization.json)
     implementation(libs.ktor.server.status.pages)
     implementation(libs.ktor.server.call.logging)
+    implementation(libs.ktor.server.swagger)
 
     implementation(libs.netty.buffer)
     implementation(libs.netty.codec)
