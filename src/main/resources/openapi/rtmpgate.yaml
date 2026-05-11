@@ -1,0 +1,415 @@
+openapi: 3.1.0
+info:
+  title: RTMPGate API
+  version: 1.0.0
+  description: HTTP control API for RTMPGate route management, health, metrics, and active RTMP sessions.
+
+servers:
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: Service
+  - name: Routes
+  - name: Sessions
+  - name: Metrics
+
+security:
+  - bearerAuth: []
+
+paths:
+  /:
+    get:
+      tags: [Service]
+      summary: Service info
+      security: []
+      responses:
+        "200":
+          description: Service status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceInfoResponse"
+
+  /health:
+    get:
+      tags: [Service]
+      summary: Health check
+      security: []
+      responses:
+        "200":
+          description: RTMPGate is ready to accept traffic
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: RTMPGate is not ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /metrics:
+    get:
+      tags: [Metrics]
+      summary: Prometheus metrics
+      security: []
+      responses:
+        "200":
+          description: Prometheus-compatible metrics
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /v1/routes:
+    get:
+      tags: [Routes]
+      summary: List routes
+      security: []
+      responses:
+        "200":
+          description: Route list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RouteListResponse"
+
+    post:
+      tags: [Routes]
+      summary: Create a route
+      description: Requires bearer auth when RTMPGATE_ADMIN_TOKEN is configured.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRouteRequest"
+      responses:
+        "201":
+          description: Route created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RouteRecord"
+        "200":
+          description: Existing route updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RouteRecord"
+        "400":
+          description: Invalid route payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/routes/{streamKey}:
+    parameters:
+      - name: streamKey
+        in: path
+        required: true
+        description: Stream key used by RTMP publishers.
+        schema:
+          type: string
+          pattern: "^[A-Za-z0-9][A-Za-z0-9._:@-]{0,127}$"
+          example: test-key
+
+    get:
+      tags: [Routes]
+      summary: Get a route
+      security: []
+      responses:
+        "200":
+          description: Route found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RouteRecord"
+        "404":
+          description: Route not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    put:
+      tags: [Routes]
+      summary: Create or update a route
+      description: Requires bearer auth when RTMPGATE_ADMIN_TOKEN is configured.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpsertRouteRequest"
+      responses:
+        "201":
+          description: Route created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RouteRecord"
+        "200":
+          description: Route updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RouteRecord"
+        "400":
+          description: Invalid route payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+    delete:
+      tags: [Routes]
+      summary: Delete a route
+      description: Requires bearer auth when RTMPGATE_ADMIN_TOKEN is configured.
+      responses:
+        "200":
+          description: Route deleted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteRouteResponse"
+        "404":
+          description: Route did not exist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteRouteResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /v1/sessions:
+    get:
+      tags: [Sessions]
+      summary: List active RTMP sessions
+      security: []
+      responses:
+        "200":
+          description: Active sessions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionListResponse"
+
+  /v1/sessions/{sessionId}:
+    delete:
+      tags: [Sessions]
+      summary: Close an active RTMP session
+      description: Requires bearer auth when RTMPGATE_ADMIN_TOKEN is configured.
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+          example: 2f9b2e5b-b8d0-44cc-8db3-4db5bbfcb9b6
+      responses:
+        "200":
+          description: Session closed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteSessionResponse"
+        "404":
+          description: Session not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeleteSessionResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  schemas:
+    ServiceInfoResponse:
+      type: object
+      required: [name, status, version]
+      properties:
+        name:
+          type: string
+          example: RTMPGate
+        status:
+          type: string
+          example: ok
+        version:
+          type: string
+          example: 1.0.0
+
+    HealthResponse:
+      type: object
+      required: [status, storage, acceptingTraffic, activeSessions, shuttingDown]
+      properties:
+        status:
+          type: string
+          example: ok
+        storage:
+          type: string
+          example: ok
+        acceptingTraffic:
+          type: boolean
+          example: true
+        activeSessions:
+          type: integer
+          example: 0
+        shuttingDown:
+          type: boolean
+          example: false
+
+    RouteRecord:
+      type: object
+      required: [streamKey, target, createdAtEpochMillis, updatedAtEpochMillis]
+      properties:
+        streamKey:
+          type: string
+          example: test-key
+        target:
+          type: string
+          example: rtmp://localhost:1936/live/test-target
+        createdAtEpochMillis:
+          type: integer
+          format: int64
+          example: 1778500000000
+        updatedAtEpochMillis:
+          type: integer
+          format: int64
+          example: 1778500000000
+
+    CreateRouteRequest:
+      type: object
+      required: [streamKey, target]
+      properties:
+        streamKey:
+          type: string
+          example: test-key
+        target:
+          type: string
+          example: rtmp://localhost:1936/live/test-target
+
+    UpsertRouteRequest:
+      type: object
+      required: [target]
+      properties:
+        target:
+          type: string
+          example: rtmp://localhost:1936/live/test-target
+        streamKey:
+          type: string
+          nullable: true
+          description: Optional. If provided, it must match the streamKey path parameter.
+          example: test-key
+
+    RouteListResponse:
+      type: object
+      required: [count, routes]
+      properties:
+        count:
+          type: integer
+          example: 1
+        routes:
+          type: array
+          items:
+            $ref: "#/components/schemas/RouteRecord"
+
+    ActiveRtmpSessionResponse:
+      type: object
+      required:
+        - id
+        - remoteAddress
+        - remotePort
+        - connectedAtEpochMillis
+        - streamKey
+        - target
+        - state
+      properties:
+        id:
+          type: string
+          example: 2f9b2e5b-b8d0-44cc-8db3-4db5bbfcb9b6
+        remoteAddress:
+          type: string
+          example: 127.0.0.1
+        remotePort:
+          type: integer
+          example: 51422
+        connectedAtEpochMillis:
+          type: integer
+          format: int64
+          example: 1778500000000
+        streamKey:
+          type: string
+          nullable: true
+          example: test-key
+        target:
+          type: string
+          nullable: true
+          example: rtmp://localhost:1936/live/test-target
+        state:
+          type: string
+          example: relaying
+
+    SessionListResponse:
+      type: object
+      required: [count, sessions]
+      properties:
+        count:
+          type: integer
+          example: 1
+        sessions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ActiveRtmpSessionResponse"
+
+    DeleteRouteResponse:
+      type: object
+      required: [deleted]
+      properties:
+        deleted:
+          type: boolean
+          example: true
+
+    DeleteSessionResponse:
+      type: object
+      required: [closed]
+      properties:
+        closed:
+          type: boolean
+          example: true
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: string
+          example: Missing or invalid bearer token

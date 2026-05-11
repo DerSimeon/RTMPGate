@@ -11,7 +11,7 @@ plugins {
 }
 
 group = "lol.simeon"
-version = "1.0-SNAPSHOT"
+version = "1.0.0"
 
 repositories {
     mavenCentral()
@@ -24,6 +24,7 @@ dependencies {
     implementation(libs.ktor.serialization.json)
     implementation(libs.ktor.server.status.pages)
     implementation(libs.ktor.server.call.logging)
+    implementation(libs.ktor.server.swagger)
 
     implementation(libs.netty.buffer)
     implementation(libs.netty.codec)
