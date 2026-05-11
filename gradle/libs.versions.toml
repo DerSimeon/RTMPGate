@@ -1,4 +1,5 @@
 [versions]
+sonarqube = "7.3.0.8198"
 detekt = "2.0.0-alpha.3"
 kotlin = "2.4.0-Beta2"
 ktor = "3.4.3"
@@ -18,6 +19,7 @@ kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", versi
 ktor = { id = "io.ktor.plugin", version.ref = "ktor" }
 shadow = { id = "com.gradleup.shadow", version.ref = "shadow" }
 detekt = { id = "dev.detekt", version.ref = "detekt" }
+sonarqube = { id = "org.sonarqube", version.ref = "sonarqube" }
 
 [libraries]
 ktor-server-core = { module = "io.ktor:ktor-server-core-jvm", version.ref = "ktor" }

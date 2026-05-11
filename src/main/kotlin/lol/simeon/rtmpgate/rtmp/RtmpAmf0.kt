@@ -34,16 +34,7 @@ object RtmpAmf0 {
                     app = readConnectApp(input),
                 )
 
-                "publish" -> {
-                    skipValue(input)
-                    RtmpCommand(
-                        name = name,
-                        transactionId = transactionId,
-                        streamKey = readString(input),
-                    )
-                }
-
-                "releaseStream", "FCPublish", "FCUnpublish" -> {
+                "publish", "releaseStream", "FCPublish", "FCUnpublish" -> {
                     skipValue(input)
                     RtmpCommand(
                         name = name,
@@ -146,32 +137,56 @@ object RtmpAmf0 {
 
     private fun skipValue(input: ByteBuf) {
         if (!input.isReadable) return
+
         when (val marker = input.readUnsignedByte().toInt()) {
-            NUMBER -> if (input.readableBytes() >= 8) input.skipBytes(8)
-            BOOLEAN -> if (input.readableBytes() >= 1) input.skipBytes(1)
+            NUMBER -> input.skipIfReadable(8)
+            BOOLEAN -> input.skipIfReadable(1)
             NULL, UNDEFINED -> Unit
-            STRING -> {
-                if (input.readableBytes() >= 2) {
-                    val length = input.readUnsignedShort()
-                    if (input.readableBytes() >= length) input.skipBytes(length)
-                }
-            }
-            OBJECT, ECMA_ARRAY -> {
-                if (marker == ECMA_ARRAY && input.readableBytes() >= 4) input.skipBytes(4)
-                while (input.readableBytes() >= 3) {
-                    val keyLength = input.readUnsignedShort()
-                    if (keyLength == 0) {
-                        val end = input.readUnsignedByte().toInt()
-                        if (end == OBJECT_END) return
-                        input.readerIndex(input.readerIndex() - 1)
-                    } else {
-                        if (input.readableBytes() < keyLength) return
-                        input.skipBytes(keyLength)
-                        skipValue(input)
-                    }
-                }
-            }
+            STRING -> skipString(input)
+            OBJECT, ECMA_ARRAY -> skipObject(input, marker == ECMA_ARRAY)
             else -> Unit
         }
+    }
+
+    private fun skipString(input: ByteBuf) {
+        if (input.readableBytes() < 2) return
+
+        val length = input.readUnsignedShort()
+        input.skipIfReadable(length)
+    }
+
+    private fun skipObject(input: ByteBuf, hasArrayLength: Boolean) {
+        if (hasArrayLength && !input.skipIfReadable(4)) return
+
+        while (input.readableBytes() >= 3) {
+            if (isObjectEnd(input)) return
+
+            val keyLength = input.readUnsignedShort()
+            if (input.readableBytes() < keyLength) return
+
+            input.skipBytes(keyLength)
+            skipValue(input)
+        }
+    }
+
+    private fun isObjectEnd(input: ByteBuf): Boolean {
+        val keyLength = input.readUnsignedShort()
+        if (keyLength != 0) {
+            input.readerIndex(input.readerIndex() - 2)
+            return false
+        }
+
+        val marker = input.readUnsignedByte().toInt()
+        if (marker == OBJECT_END) return true
+
+        input.readerIndex(input.readerIndex() - 3)
+        return false
+    }
+
+    private fun ByteBuf.skipIfReadable(length: Int): Boolean {
+        if (readableBytes() < length) return false
+
+        skipBytes(length)
+        return true
     }
 }

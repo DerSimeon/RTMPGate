@@ -4,6 +4,7 @@ import io.lettuce.core.RedisClient
 import io.lettuce.core.ScanArgs
 import io.lettuce.core.ScanCursor
 import io.lettuce.core.api.StatefulRedisConnection
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.encodeToString
@@ -12,6 +13,7 @@ import org.slf4j.LoggerFactory
 
 class RedisRouteStore(
     redisUrl: String,
+    private val dispatcher: CoroutineDispatcher = Dispatchers.IO
 ) : RouteStore {
     private val logger = LoggerFactory.getLogger(RedisRouteStore::class.java)
     private val json = Json {
@@ -23,11 +25,11 @@ class RedisRouteStore(
     private val connection: StatefulRedisConnection<String, String> = client.connect()
     private val commands = connection.sync()
 
-    override suspend fun get(streamKey: String): RouteRecord? = withContext(Dispatchers.IO) {
-        decode(streamKey, commands.get(key(streamKey)))
+    override suspend fun get(streamKey: String): RouteRecord? = withContext(dispatcher) {
+        decode(streamKey, commands[key(streamKey)])
     }
 
-    override suspend fun list(): List<RouteRecord> = withContext(Dispatchers.IO) {
+    override suspend fun list(): List<RouteRecord> = withContext(dispatcher) {
         val records = mutableListOf<RouteRecord>()
         var cursor: ScanCursor = ScanCursor.INITIAL
         val args = ScanArgs.Builder.matches("route:*").limit(500)
@@ -37,7 +39,7 @@ class RedisRouteStore(
             cursor = result
             for (redisKey in result.keys) {
                 val streamKey = redisKey.removePrefix("route:")
-                decode(streamKey, commands.get(redisKey))?.let(records::add)
+                decode(streamKey, commands[redisKey])?.let(records::add)
             }
         } while (!cursor.isFinished)
 
@@ -45,16 +47,16 @@ class RedisRouteStore(
     }
 
     override suspend fun put(record: RouteRecord) {
-        withContext(Dispatchers.IO) {
-            commands.set(key(record.streamKey), json.encodeToString(record))
+        withContext(dispatcher) {
+            commands[key(record.streamKey)] = json.encodeToString(record)
         }
     }
 
-    override suspend fun delete(streamKey: String): Boolean = withContext(Dispatchers.IO) {
+    override suspend fun delete(streamKey: String): Boolean = withContext(dispatcher) {
         commands.del(key(streamKey)) > 0
     }
 
-    override suspend fun isReady(): Boolean = withContext(Dispatchers.IO) {
+    override suspend fun isReady(): Boolean = withContext(dispatcher) {
         runCatching { commands.ping() == "PONG" }.getOrDefault(false)
     }
 
@@ -66,7 +68,7 @@ class RedisRouteStore(
     private fun decode(streamKey: String, raw: String?): RouteRecord? {
         return raw?.let {
             runCatching { json.decodeFromString<RouteRecord>(it) }
-                .onFailure { error -> logger.warn("Invalid route payload for stream key {}", streamKey, error) }
+                .onFailure { error -> logger.warn("Invalid route payload for stream key {}: {}", streamKey, error) }
                 .getOrNull()
         }
     }

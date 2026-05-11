@@ -16,5 +16,7 @@ interface RouteStore : AutoCloseable {
     suspend fun put(record: RouteRecord)
     suspend fun delete(streamKey: String): Boolean
     suspend fun isReady(): Boolean = true
-    override fun close() {}
+    override fun close() {
+        // defaulting to empty for in-memory store
+    }
 }

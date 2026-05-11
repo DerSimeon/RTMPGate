@@ -22,6 +22,7 @@ import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
+import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -102,54 +103,91 @@ class HttpServer(
     }
 
     private fun Routing.routeRoutes() {
-        get("/v1/routes") {
-            val routes = routeStore.list()
-            call.respond(RouteListResponse(count = routes.size, routes = routes))
+        route("/v1/routes") {
+            get { listRoutes() }
+            post { createRoute() }
         }
 
-        post("/v1/routes") {
-            if (!HttpAuth.requireAdmin(call, config)) return@post
+        route("/v1/routes/{streamKey}") {
+            put { upsertRoute() }
+            get { getRoute() }
+            delete { deleteRoute() }
+        }
+    }
 
-            val request = call.receive<CreateRouteRequest>()
-            val streamKey = RouteValidator.requireValidStreamKey(request.streamKey)
-            val target = RouteValidator.requireValidTarget(request.target, config.targetHostAllowList)
+    private suspend fun RoutingContext.listRoutes() {
+        val routes = routeStore.list()
 
-            respondUpsertedRoute(streamKey, target)
+        call.respond(
+            RouteListResponse(
+                count = routes.size,
+                routes = routes,
+            ),
+        )
+    }
+
+    private suspend fun RoutingContext.createRoute() {
+        if (!HttpAuth.requireAdmin(call, config)) return
+
+        val request = call.receive<CreateRouteRequest>()
+        val streamKey = RouteValidator.requireValidStreamKey(request.streamKey)
+        val target = RouteValidator.requireValidTarget(
+            request.target,
+            config.targetHostAllowList,
+        )
+
+        respondUpsertedRoute(streamKey, target)
+    }
+
+    private suspend fun RoutingContext.upsertRoute() {
+        if (!HttpAuth.requireAdmin(call, config)) return
+
+        val streamKey = call.validStreamKeyParameter()
+        val request = call.receive<UpsertRouteRequest>()
+
+        validateBodyStreamKey(request.streamKey, streamKey)
+
+        val target = RouteValidator.requireValidTarget(
+            request.target,
+            config.targetHostAllowList,
+        )
+
+        respondUpsertedRoute(streamKey, target)
+    }
+
+    private suspend fun RoutingContext.getRoute() {
+        val streamKey = call.validStreamKeyParameter()
+        val record = routeStore.get(streamKey)
+
+        if (record == null) {
+            call.respond(HttpStatusCode.NotFound, ErrorResponse("Route not found"))
+            return
         }
 
-        put("/v1/routes/{streamKey}") {
-            if (!HttpAuth.requireAdmin(call, config)) return@put
+        call.respond(record)
+    }
 
-            val streamKey = call.validStreamKeyParameter()
-            val request = call.receive<UpsertRouteRequest>()
+    private suspend fun RoutingContext.deleteRoute() {
+        if (!HttpAuth.requireAdmin(call, config)) return
 
-            request.streamKey?.let {
-                require(RouteValidator.requireValidStreamKey(it) == streamKey) {
-                    "Body streamKey must match the route stream key"
-                }
-            }
+        val streamKey = call.validStreamKeyParameter()
+        val deleted = routeStore.delete(streamKey)
 
-            val target = RouteValidator.requireValidTarget(request.target, config.targetHostAllowList)
-            respondUpsertedRoute(streamKey, target)
-        }
+        call.respond(
+            if (deleted) HttpStatusCode.OK else HttpStatusCode.NotFound,
+            DeleteRouteResponse(deleted = deleted),
+        )
+    }
 
-        get("/v1/routes/{streamKey}") {
-            val streamKey = call.validStreamKeyParameter()
-            val record = routeStore.get(streamKey)
+    private fun validateBodyStreamKey(
+        bodyStreamKey: String?,
+        routeStreamKey: String,
+    ) {
+        val validatedBodyStreamKey = bodyStreamKey
+            ?.let(RouteValidator::requireValidStreamKey)
 
-            if (record == null) {
-                call.respond(HttpStatusCode.NotFound, ErrorResponse("Route not found"))
-            } else {
-                call.respond(record)
-            }
-        }
-
-        delete("/v1/routes/{streamKey}") {
-            if (!HttpAuth.requireAdmin(call, config)) return@delete
-
-            val streamKey = call.validStreamKeyParameter()
-            val deleted = routeStore.delete(streamKey)
-            call.respond(if (deleted) HttpStatusCode.OK else HttpStatusCode.NotFound, DeleteRouteResponse(deleted = deleted))
+        require(validatedBodyStreamKey == null || validatedBodyStreamKey == routeStreamKey) {
+            "Body streamKey must match the route stream key"
         }
     }
 

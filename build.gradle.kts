@@ -1,9 +1,12 @@
+import org.gradle.internal.impldep.org.apache.commons.compress.harmony.pack200.PackingUtils.config
+
 plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ktor)
     alias(libs.plugins.shadow)
     alias(libs.plugins.detekt)
+    alias(libs.plugins.sonarqube)
     application
 }
 
@@ -59,4 +62,15 @@ detekt {
     allRules = false
     parallel = true
     config = files("$rootDir/detekt.yml")
+}
+
+
+sonar {
+    properties {
+        property("sonar.projectKey", "DerSimeon_RTMPGate")
+        property("sonar.organization","dersimeon")
+        property("sonar.sources", "src/main/kotlin")
+        property("sonar.tests", "src/test/kotlin")
+        property("sonar.sourceEncoding", "UTF-8")
+    }
 }

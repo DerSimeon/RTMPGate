@@ -103,48 +103,75 @@ class RtmpSession(
         while (inputBuffer.isReadable && state != RtmpSessionState.CLOSED) {
             debug("RTMP state={} readable={}", state, inputBuffer.readableBytes())
 
-            when (state) {
-                RtmpSessionState.WAIT_C0_C1 -> {
-                    if (!RtmpHandshake.canReadC0C1(inputBuffer)) return
-                    RtmpHandshake.handleServerHandshake(ctx, inputBuffer)
-                    state = RtmpSessionState.WAIT_C2
-                }
-
-                RtmpSessionState.WAIT_C2 -> {
-                    if (!RtmpHandshake.canReadC2(inputBuffer)) return
-                    RtmpHandshake.discardC2(inputBuffer)
-                    state = RtmpSessionState.WAIT_PUBLISH
-                }
-
-                RtmpSessionState.WAIT_PUBLISH -> {
-                    val messages = codec.readMessages(inputBuffer)
-                    if (messages.isEmpty()) return
-                    handleHandshakeMessages(ctx, messages)
-                }
-
-                RtmpSessionState.STARTING_UPSTREAM -> {
-                    val messages = codec.readMessages(inputBuffer)
-                    if (messages.isEmpty()) return
-                    synchronized(relayLock) {
-                        bufferedRelayMessages += messages.filter { it.isRelayableMedia() }
-                    }
-                }
-
-                RtmpSessionState.RELAYING -> {
-                    val messages = codec.readMessages(inputBuffer)
-                    if (messages.isEmpty()) return
-                    val client = upstream ?: return
-
-                    messages.filter { it.isRelayableMedia() }.forEach { message ->
-                        RtmpGateMetrics.bytesIn(message.payload.size.toLong())
-                        client.writeMedia(message)
-                        RtmpGateMetrics.bytesOut(message.payload.size.toLong())
-                    }
-                }
-
-                RtmpSessionState.CLOSED -> return
+            val shouldContinue = when (state) {
+                RtmpSessionState.WAIT_C0_C1 -> drainC0C1(ctx)
+                RtmpSessionState.WAIT_C2 -> drainC2()
+                RtmpSessionState.WAIT_PUBLISH -> drainPublish(ctx)
+                RtmpSessionState.STARTING_UPSTREAM -> drainStartingUpstream()
+                RtmpSessionState.RELAYING -> drainRelaying()
+                RtmpSessionState.CLOSED -> false
             }
+
+            if (!shouldContinue) return
         }
+    }
+
+    private fun drainC0C1(ctx: ChannelHandlerContext): Boolean {
+        if (!RtmpHandshake.canReadC0C1(inputBuffer)) return false
+
+        RtmpHandshake.handleServerHandshake(ctx, inputBuffer)
+        state = RtmpSessionState.WAIT_C2
+        return true
+    }
+
+    private fun drainC2(): Boolean {
+        if (!RtmpHandshake.canReadC2(inputBuffer)) return false
+
+        RtmpHandshake.discardC2(inputBuffer)
+        state = RtmpSessionState.WAIT_PUBLISH
+        return true
+    }
+
+    private fun drainPublish(ctx: ChannelHandlerContext): Boolean {
+        val messages = readMessagesOrNull() ?: return false
+
+        handleHandshakeMessages(ctx, messages)
+        return true
+    }
+
+    private fun drainStartingUpstream(): Boolean {
+        val messages = readMessagesOrNull() ?: return false
+        val relayableMessages = messages.filter { it.isRelayableMedia() }
+
+        synchronized(relayLock) {
+            bufferedRelayMessages += relayableMessages
+        }
+
+        return true
+    }
+
+    private fun drainRelaying(): Boolean {
+        val messages = readMessagesOrNull() ?: return false
+        val client = upstream ?: return false
+
+        messages
+            .filter { it.isRelayableMedia() }
+            .forEach { message -> relayMessage(client, message) }
+
+        return true
+    }
+
+    private fun readMessagesOrNull(): List<RtmpMessage>? {
+        val messages = codec.readMessages(inputBuffer)
+        return messages.ifEmpty { null }
+    }
+
+    private fun relayMessage(client: RtmpUpstreamClient, message: RtmpMessage) {
+        val payloadSize = message.payload.size.toLong()
+
+        RtmpGateMetrics.bytesIn(payloadSize)
+        client.writeMedia(message)
+        RtmpGateMetrics.bytesOut(payloadSize)
     }
 
     private fun handleHandshakeMessages(ctx: ChannelHandlerContext, messages: List<RtmpMessage>) {

@@ -6,7 +6,7 @@ import java.time.Duration
 class CachedRouteStore(
     private val delegate: RouteStore,
     ttlSeconds: Long,
-) : RouteStore {
+) : RouteStore by delegate {
     private val cache = Caffeine.newBuilder()
         .expireAfterWrite(Duration.ofSeconds(ttlSeconds.coerceAtLeast(1)))
         .maximumSize(100_000)
@@ -23,8 +23,6 @@ class CachedRouteStore(
         return record
     }
 
-    override suspend fun list(): List<RouteRecord> = delegate.list()
-
     override suspend fun put(record: RouteRecord) {
         delegate.put(record)
         cache.put(record.streamKey, record)
@@ -35,8 +33,6 @@ class CachedRouteStore(
         cache.invalidate(streamKey)
         return deleted
     }
-
-    override suspend fun isReady(): Boolean = delegate.isReady()
 
     override fun close() {
         cache.invalidateAll()

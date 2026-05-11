@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -33,7 +34,7 @@ jobs:
         run: chmod +x ./gradlew
 
       - name: Build
-        run: ./gradlew test shadowJar --no-daemon
+        run: ./gradlew detekt test shadowJar --no-daemon
 
       - name: Read project version
         id: version
