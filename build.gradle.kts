@@ -9,7 +9,7 @@ plugins {
 }
 
 group = "lol.simeon"
-version = "1.0.0"
+version = "1.0.1"
 
 repositories {
     mavenCentral()
@@ -71,8 +71,8 @@ detekt {
 
 sonar {
     properties {
-        property("sonar.projectKey", "DerSimeon_RTMPGate")
-        property("sonar.organization","dersimeon")
+        property("sonar.projectKey", "RTMPGate")
+        property("sonar.host.url", "https://sq.simeon.lol")
         property("sonar.sources", "src/main/kotlin")
         property("sonar.tests", "src/test/kotlin")
         property("sonar.sourceEncoding", "UTF-8")
