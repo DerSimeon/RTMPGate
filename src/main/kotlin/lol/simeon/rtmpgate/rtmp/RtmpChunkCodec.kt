@@ -6,8 +6,13 @@ import kotlin.math.min
 
 class RtmpChunkCodec(
     private var inboundChunkSize: Int = RtmpConstants.DEFAULT_CHUNK_SIZE,
+    private val maxMessageBytes: Int = DEFAULT_MAX_MESSAGE_BYTES,
 ) {
     private val streams = mutableMapOf<Int, RtmpChunkStreamState>()
+
+    fun readPackets(input: ByteBuf): List<RtmpPacket> {
+        return readMessages(input).map(RtmpPacket::fromMessage)
+    }
 
     fun readMessages(input: ByteBuf): List<RtmpMessage> {
         val messages = mutableListOf<RtmpMessage>()
@@ -34,6 +39,29 @@ class RtmpChunkCodec(
 
     fun command(message: RtmpMessage): RtmpCommand? = RtmpAmf0.parseCommand(message)
 
+    fun encodePacket(
+        packet: RtmpPacket,
+        chunkStreamId: Int,
+        outboundChunkSize: Int = RtmpConstants.DEFAULT_CHUNK_SIZE,
+    ): ByteBuf {
+        val payload = packet.payload.retainedDuplicate()
+        val out = Unpooled.buffer(packet.payloadSize + 32)
+        var first = true
+
+        try {
+            while (payload.isReadable) {
+                val bytesToWrite = min(outboundChunkSize, payload.readableBytes())
+                writeChunkHeader(out, packet, chunkStreamId, first)
+                out.writeBytes(payload, bytesToWrite)
+                first = false
+            }
+        } finally {
+            payload.release()
+        }
+
+        return out
+    }
+
     fun encode(
         message: RtmpMessage,
         chunkStreamId: Int,
@@ -43,14 +71,17 @@ class RtmpChunkCodec(
         val out = Unpooled.buffer(message.payload.size + 32)
         var first = true
 
-        while (payload.isReadable) {
-            val bytesToWrite = min(outboundChunkSize, payload.readableBytes())
-            writeChunkHeader(out, message, chunkStreamId, first)
-            out.writeBytes(payload, bytesToWrite)
-            first = false
+        try {
+            while (payload.isReadable) {
+                val bytesToWrite = min(outboundChunkSize, payload.readableBytes())
+                writeChunkHeader(out, message, chunkStreamId, first)
+                out.writeBytes(payload, bytesToWrite)
+                first = false
+            }
+        } finally {
+            payload.release()
         }
 
-        payload.release()
         return out
     }
 
@@ -133,6 +164,12 @@ class RtmpChunkCodec(
         chunkStreamId: Int,
         state: RtmpChunkStreamState,
     ): RtmpChunkReadResult {
+        // Reject an over-large declared message length before we start accumulating its payload
+        // on the heap. Prevents a malicious/broken peer from exhausting memory.
+        check(state.header.length <= maxMessageBytes) {
+            "RTMP message length ${state.header.length} exceeds limit $maxMessageBytes"
+        }
+
         val bytesToRead = bytesToRead(state) ?: return RtmpChunkReadResult.Incomplete
         if (input.readableBytes() < bytesToRead) return RtmpChunkReadResult.Incomplete
 
@@ -191,6 +228,19 @@ class RtmpChunkCodec(
         }
     }
 
+    private fun writeChunkHeader(
+        out: ByteBuf,
+        packet: RtmpPacket,
+        chunkStreamId: Int,
+        first: Boolean,
+    ) {
+        if (first) {
+            writeType0ChunkHeader(out, packet, chunkStreamId)
+        } else {
+            writeType3ChunkHeader(out, packet, chunkStreamId)
+        }
+    }
+
     private fun writeType0ChunkHeader(out: ByteBuf, message: RtmpMessage, chunkStreamId: Int) {
         writeBasicHeader(out, 0, chunkStreamId)
 
@@ -205,11 +255,33 @@ class RtmpChunkCodec(
         }
     }
 
+    private fun writeType0ChunkHeader(out: ByteBuf, packet: RtmpPacket, chunkStreamId: Int) {
+        writeBasicHeader(out, 0, chunkStreamId)
+
+        val timestamp = min(packet.timestamp, MAX_BASIC_TIMESTAMP)
+        out.writeMedium(timestamp)
+        out.writeMedium(packet.payloadSize)
+        out.writeByte(packet.typeId)
+        out.writeIntLE(packet.streamId)
+
+        if (packet.timestamp >= MAX_BASIC_TIMESTAMP) {
+            out.writeInt(packet.timestamp)
+        }
+    }
+
     private fun writeType3ChunkHeader(out: ByteBuf, message: RtmpMessage, chunkStreamId: Int) {
         writeBasicHeader(out, 3, chunkStreamId)
 
         if (message.timestamp >= MAX_BASIC_TIMESTAMP) {
             out.writeInt(message.timestamp)
+        }
+    }
+
+    private fun writeType3ChunkHeader(out: ByteBuf, packet: RtmpPacket, chunkStreamId: Int) {
+        writeBasicHeader(out, 3, chunkStreamId)
+
+        if (packet.timestamp >= MAX_BASIC_TIMESTAMP) {
+            out.writeInt(packet.timestamp)
         }
     }
 
@@ -267,6 +339,7 @@ class RtmpChunkCodec(
         const val TYPE_0_HEADER_SIZE = 11
         const val TYPE_1_HEADER_SIZE = 7
         const val TYPE_2_HEADER_SIZE = 3
+        const val DEFAULT_MAX_MESSAGE_BYTES = 16 * 1024 * 1024
     }
 }
 

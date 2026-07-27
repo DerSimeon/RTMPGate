@@ -1,0 +1,22 @@
+apiVersion: v2
+name: rtmpgate
+description: A lightweight RTMP ingest router (stream-key to upstream RTMP target).
+type: application
+
+# Chart version — bump on any chart change (SemVer). Independent of appVersion.
+version: 0.1.0
+
+# The default container image tag. Keep in sync with the published RTMPGate release.
+appVersion: "1.0.0"
+
+home: https://github.com/DerSimeon/RTMPGate
+sources:
+  - https://github.com/DerSimeon/RTMPGate
+keywords:
+  - rtmp
+  - streaming
+  - ingest
+  - relay
+maintainers:
+  - name: DerSimeon
+    url: https://github.com/DerSimeon

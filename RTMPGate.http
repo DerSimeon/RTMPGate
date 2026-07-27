@@ -12,12 +12,12 @@ GET {{host}}/metrics
 
 ### Upsert route with key in URL
 # This is the recommended request. The stream key is taken from the URL.
-PUT {{host}}/v1/routes/test-key
+PUT {{host}}/v1/routes/cgM28AHD
 Content-Type: application/json
 Authorization: Bearer {{adminToken}}
 
 {
-  "target": "rtmp://localhost:1936/live/test-target"
+  "target": "rtmp://34.42.108.183/live/2bc2e4f3-59dc-4a2a-859b-0abc727eff2b"
 }
 
 ### Create route with key in request body
@@ -26,12 +26,12 @@ Content-Type: application/json
 Authorization: Bearer {{adminToken}}
 
 {
-  "streamKey": "test-key",
-  "target": "rtmp://localhost:1936/live/test-target"
+  "streamKey": "cgM28AHD",
+  "target": "rtmp://34.42.108.183/live/2bc2e4f3-59dc-4a2a-859b-0abc727eff2b"
 }
 
 ### Get route
-GET {{host}}/v1/routes/test-key
+GET {{host}}/v1/routes/cgM28AHD
 
 ### List routes
 GET {{host}}/v1/routes

@@ -13,10 +13,19 @@ data class AppConfig(
     val readTimeoutMillis: Int,
     val rtmpDebug: Boolean,
     val adminToken: String?,
+    val requireReadAuth: Boolean,
     val maxActiveSessions: Int,
     val maxSessionsPerIp: Int,
     val targetHostAllowList: Set<String>,
+    val maxInputBufferBytes: Int,
+    val maxRtmpMessageBytes: Int,
     val gracefulShutdownMillis: Long,
+    val startupBufferBytes: Long,
+    val startupBufferMessages: Int,
+    val upstreamHighWatermarkBytes: Int,
+    val upstreamLowWatermarkBytes: Int,
+    val backpressureTimeoutMillis: Long,
+    val upstreamWriteTimeoutMillis: Long,
 ) {
     companion object {
         fun fromEnvironment(env: Map<String, String> = System.getenv()): AppConfig {
@@ -35,10 +44,19 @@ data class AppConfig(
                 readTimeoutMillis = reader.int("RTMPGATE_READ_TIMEOUT_MS", 30_000),
                 rtmpDebug = reader.boolean("RTMPGATE_RTMP_DEBUG"),
                 adminToken = reader.optionalString("RTMPGATE_ADMIN_TOKEN"),
+                requireReadAuth = reader.boolean("RTMPGATE_REQUIRE_READ_AUTH"),
                 maxActiveSessions = reader.int("RTMPGATE_MAX_ACTIVE_SESSIONS", 0),
                 maxSessionsPerIp = reader.int("RTMPGATE_MAX_SESSIONS_PER_IP", 0),
                 targetHostAllowList = reader.csvSet("RTMPGATE_TARGET_HOST_ALLOWLIST"),
+                maxInputBufferBytes = reader.int("RTMPGATE_MAX_INPUT_BUFFER_BYTES", 8 * 1024 * 1024),
+                maxRtmpMessageBytes = reader.int("RTMPGATE_MAX_RTMP_MESSAGE_BYTES", 16 * 1024 * 1024),
                 gracefulShutdownMillis = reader.long("RTMPGATE_GRACEFUL_SHUTDOWN_MS", 15_000),
+                startupBufferBytes = reader.long("RTMPGATE_STARTUP_BUFFER_BYTES", 64L * 1024L * 1024L),
+                startupBufferMessages = reader.int("RTMPGATE_STARTUP_BUFFER_MESSAGES", 4096),
+                upstreamHighWatermarkBytes = reader.int("RTMPGATE_UPSTREAM_HIGH_WATERMARK_BYTES", 16 * 1024 * 1024),
+                upstreamLowWatermarkBytes = reader.int("RTMPGATE_UPSTREAM_LOW_WATERMARK_BYTES", 8 * 1024 * 1024),
+                backpressureTimeoutMillis = reader.long("RTMPGATE_BACKPRESSURE_TIMEOUT_MS", 10_000),
+                upstreamWriteTimeoutMillis = reader.long("RTMPGATE_UPSTREAM_WRITE_TIMEOUT_MS", 10_000),
             )
         }
     }

@@ -27,6 +27,7 @@ import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import lol.simeon.rtmpgate.BuildInfo
 import lol.simeon.rtmpgate.config.AppConfig
 import lol.simeon.rtmpgate.metrics.RtmpGateMetrics
 import lol.simeon.rtmpgate.routes.RouteRecord
@@ -89,7 +90,19 @@ class HttpServer(
 
     private fun Routing.serviceRoutes() {
         get("/") {
-            call.respond(ServiceInfoResponse(name = "RTMPGate", status = "ok", version = "1.0.0"))
+            call.respond(ServiceInfoResponse(name = "RTMPGate", status = "ok", version = BuildInfo.version))
+        }
+
+        // Liveness: only reflects whether the process is up. It must NOT depend on Redis, or a
+        // storage outage would trigger pointless pod restarts. Use for Kubernetes livenessProbe.
+        get("/livez") {
+            call.respond(LivenessResponse(status = "ok", version = BuildInfo.version))
+        }
+
+        // Readiness: reflects whether the instance should receive traffic. Use for
+        // readinessProbe. `/health` is kept as an alias for backward compatibility.
+        get("/readyz") {
+            respondHealth()
         }
 
         get("/health") {
@@ -118,6 +131,8 @@ class HttpServer(
     }
 
     private suspend fun RoutingContext.listRoutes() {
+        if (!HttpAuth.requireRead(call, config)) return
+
         val routes = routeStore.list()
 
         call.respond(
@@ -158,6 +173,8 @@ class HttpServer(
     }
 
     private suspend fun RoutingContext.getRoute() {
+        if (!HttpAuth.requireRead(call, config)) return
+
         val streamKey = call.validStreamKeyParameter()
         val record = routeStore.get(streamKey)
 
@@ -202,6 +219,8 @@ class HttpServer(
 
     private fun Routing.sessionRoutes() {
         get("/v1/sessions") {
+            if (!HttpAuth.requireRead(call, config)) return@get
+
             val sessions = sessionRegistry.list()
             call.respond(SessionListResponse(count = sessions.size, sessions = sessions))
         }
@@ -294,6 +313,12 @@ data class DeleteSessionResponse(
 @Serializable
 data class ServiceInfoResponse(
     val name: String,
+    val status: String,
+    val version: String,
+)
+
+@Serializable
+data class LivenessResponse(
     val status: String,
     val version: String,
 )

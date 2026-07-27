@@ -1,0 +1,153 @@
+# Default values for rtmpgate.
+# This is a YAML-formatted file. See deploy/helm/rtmpgate/README.md for a full reference.
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/dersimeon/rtmpgate
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+# Extra pod annotations/labels.
+podAnnotations: {}
+podLabels: {}
+
+# JVM options are handled by the image ENTRYPOINT (MaxRAMPercentage=75). Add extra flags here.
+extraJavaOpts: ""
+
+# -- Non-secret configuration, rendered into a ConfigMap as RTMPGATE_* env vars.
+config:
+  httpHost: "0.0.0.0"
+  httpPort: 8080
+  rtmpHost: "0.0.0.0"
+  rtmpPort: 1935
+  storage: "redis"            # redis | valkey | memory
+  routeCacheSeconds: 5
+  # Comma-separated allowlist of upstream RTMP hosts. Empty = allow all (not recommended in prod).
+  targetHostAllowlist: ""
+  maxActiveSessions: 1000
+  maxSessionsPerIp: 10
+  connectTimeoutMs: 5000
+  readTimeoutMs: 30000
+  rtmpDebug: false
+  # Require the bearer token on read endpoints too (defense in depth). Requires adminToken.
+  requireReadAuth: false
+  maxInputBufferBytes: 8388608
+  maxRtmpMessageBytes: 16777216
+  startupBufferBytes: 67108864
+  startupBufferMessages: 4096
+  gracefulShutdownMs: 15000
+  # Free-form extra env vars: name/value pairs.
+  extraEnv: {}
+
+# -- Secret configuration. By default a Secret is created from the values below.
+#    Set existingSecret to use a pre-provisioned Secret instead (keys: admin-token, redis-url).
+secret:
+  create: true
+  existingSecret: ""
+  # A long random token enabling bearer auth on write endpoints. Leave empty to disable auth.
+  adminToken: ""
+  # Redis/Valkey/Memorystore URL. Ignored when config.storage=memory.
+  redisUrl: "redis://valkey:6379"
+
+service:
+  # RTMP ingest — must be externally reachable. Ingress does NOT work (RTMP is not HTTP).
+  rtmp:
+    type: LoadBalancer
+    port: 1935
+    nodePort: null
+    annotations: {}
+    # Preserve client source IP and avoid the extra hop (recommended for LoadBalancer).
+    externalTrafficPolicy: Local
+    loadBalancerIP: null
+  # HTTP control plane + metrics — keep internal.
+  http:
+    type: ClusterIP
+    port: 8080
+    annotations: {}
+
+# Kubernetes probes. Liveness must not depend on Redis, hence /livez.
+probes:
+  liveness:
+    path: /livez
+    initialDelaySeconds: 10
+    periodSeconds: 15
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    path: /readyz
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  startup:
+    path: /livez
+    periodSeconds: 5
+    failureThreshold: 30
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: "1"
+    memory: 3Gi
+
+# Long-lived RTMP sessions: never take a pod down before its replacement is Ready, and give
+# in-flight publishers time to drain (should exceed config.gracefulShutdownMs / 1000).
+strategy:
+  type: RollingUpdate
+  rollingUpdate:
+    maxUnavailable: 0
+    maxSurge: 1
+terminationGracePeriodSeconds: 45
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: null
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+  maxUnavailable: null
+
+# Prometheus scraping. Set serviceMonitor.enabled with the Prometheus Operator installed.
+metrics:
+  podAnnotations: true          # adds prometheus.io/scrape annotations
+  path: /metrics
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    scrapeTimeout: 10s
+    labels: {}
+
+# Pod / container hardening (defaults are strict; image runs as non-root uid).
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+# Spread replicas across nodes for availability.
+topologySpreadConstraints: []

@@ -1,5 +1,3 @@
-import org.gradle.internal.impldep.org.apache.commons.compress.harmony.pack200.PackingUtils.config
-
 plugins {
     alias(libs.plugins.kotlin.jvm)
     alias(libs.plugins.kotlin.serialization)
@@ -11,7 +9,7 @@ plugins {
 }
 
 group = "lol.simeon"
-version = "1.0.0"
+version = "1.0.1"
 
 repositories {
     mavenCentral()
@@ -37,9 +35,6 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
 
-    implementation(libs.micrometer.core)
-    implementation(libs.micrometer.prometheus)
-
     runtimeOnly(libs.logback.classic)
 
     testImplementation(libs.kotlin.test)
@@ -58,18 +53,26 @@ tasks.test {
     useJUnitPlatform()
 }
 
+// Stamp the project version into the JAR manifest so the running service can report it
+// (see lol.simeon.rtmpgate.BuildInfo) instead of hard-coding "1.0.0" in several places.
+tasks.withType<Jar>().configureEach {
+    manifest {
+        attributes["Implementation-Version"] = project.version.toString()
+    }
+}
+
 detekt {
     buildUponDefaultConfig = true
     allRules = false
     parallel = true
-    config = files("$rootDir/detekt.yml")
+    config.setFrom(files("$rootDir/detekt.yml"))
 }
 
 
 sonar {
     properties {
-        property("sonar.projectKey", "DerSimeon_RTMPGate")
-        property("sonar.organization","dersimeon")
+        property("sonar.projectKey", "RTMPGate")
+        property("sonar.host.url", "https://sq.simeon.lol")
         property("sonar.sources", "src/main/kotlin")
         property("sonar.tests", "src/test/kotlin")
         property("sonar.sourceEncoding", "UTF-8")

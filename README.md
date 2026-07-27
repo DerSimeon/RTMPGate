@@ -136,13 +136,18 @@ http://localhost:8890/live/test-target/
 ## Health
 
 ```http
-GET /health
+GET /livez     # liveness  — 200 while the process is alive (never depends on Redis)
+GET /readyz    # readiness — 200 when able to accept traffic, 503 otherwise
+GET /health    # alias of /readyz (kept for backward compatibility)
 ```
 
-Returns:
+`/readyz` returns:
 
 - `200` when RTMPGate can accept traffic
 - `503` when storage is unavailable or the instance is shutting down
+
+Use `/livez` for the Kubernetes liveness probe and `/readyz` for readiness — a storage outage
+should drain traffic (readiness) without restarting the pod (liveness).
 
 ---
 
@@ -252,22 +257,51 @@ Stream keys:
 
 # Environment Variables
 
-| Variable | Default | Description |
-|---|---:|---|
-| `RTMPGATE_HTTP_HOST` | `0.0.0.0` | HTTP bind host |
-| `RTMPGATE_HTTP_PORT` | `8080` | HTTP bind port |
-| `RTMPGATE_RTMP_HOST` | `0.0.0.0` | RTMP bind host |
-| `RTMPGATE_RTMP_PORT` | `1935` | RTMP bind port |
-| `RTMPGATE_STORAGE` | `redis` | `redis`, `valkey`, or `memory` |
-| `RTMPGATE_REDIS_URL` | `redis://localhost:6379` | Redis / Valkey / Memorystore URL |
-| `RTMPGATE_ROUTE_CACHE_SECONDS` | `5` | Local route-cache TTL |
-| `RTMPGATE_ADMIN_TOKEN` | unset | Enables bearer auth for write endpoints |
-| `RTMPGATE_TARGET_HOST_ALLOWLIST` | unset | Comma-separated upstream host allowlist |
-| `RTMPGATE_MAX_ACTIVE_SESSIONS` | `0` | Global RTMP session limit |
-| `RTMPGATE_MAX_SESSIONS_PER_IP` | `0` | Per-IP RTMP session limit |
-| `RTMPGATE_CONNECT_TIMEOUT_MS` | `5000` | Upstream connect timeout |
-| `RTMPGATE_READ_TIMEOUT_MS` | `30000` | RTMP read timeout |
-| `RTMPGATE_RTMP_DEBUG` | `false` | Verbose RTMP protocol logging |
+| Variable                           |                  Default | Description                                         |
+|------------------------------------|-------------------------:|-----------------------------------------------------|
+| `RTMPGATE_HTTP_HOST`               |                `0.0.0.0` | HTTP bind host                                      |
+| `RTMPGATE_HTTP_PORT`               |                   `8080` | HTTP bind port                                      |
+| `RTMPGATE_RTMP_HOST`               |                `0.0.0.0` | RTMP bind host                                      |
+| `RTMPGATE_RTMP_PORT`               |                   `1935` | RTMP bind port                                      |
+| `RTMPGATE_STORAGE`                 |                  `redis` | `redis`, `valkey`, or `memory`                      |
+| `RTMPGATE_REDIS_URL`               | `redis://localhost:6379` | Redis / Valkey / Memorystore URL                    |
+| `RTMPGATE_ROUTE_CACHE_SECONDS`     |                      `5` | Local route-cache TTL                               |
+| `RTMPGATE_ADMIN_TOKEN`             |                    unset | Enables bearer auth for write endpoints             |
+| `RTMPGATE_REQUIRE_READ_AUTH`       |                  `false` | Also require the bearer token on read endpoints     |
+| `RTMPGATE_TARGET_HOST_ALLOWLIST`   |                    unset | Comma-separated upstream host allowlist             |
+| `RTMPGATE_MAX_ACTIVE_SESSIONS`     |                      `0` | Global RTMP session limit                           |
+| `RTMPGATE_MAX_SESSIONS_PER_IP`     |                      `0` | Per-IP RTMP session limit                           |
+| `RTMPGATE_CONNECT_TIMEOUT_MS`      |                   `5000` | Upstream connect timeout                            |
+| `RTMPGATE_READ_TIMEOUT_MS`         |                  `30000` | RTMP read timeout                                   |
+| `RTMPGATE_RTMP_DEBUG`              |                  `false` | Verbose RTMP protocol logging                       |
+| `RTMPGATE_STARTUP_BUFFER_BYTES`    |               `67108864` | Max buffered media bytes while upstream connects    |
+| `RTMPGATE_STARTUP_BUFFER_MESSAGES` |                   `4096` | Max buffered media messages while upstream connects |
+| `RTMPGATE_MAX_INPUT_BUFFER_BYTES`  |                `8388608` | Max unparsed inbound bytes before the session is cut |
+| `RTMPGATE_MAX_RTMP_MESSAGE_BYTES`  |               `16777216` | Max single RTMP message size accepted               |
+| `RTMPGATE_GRACEFUL_SHUTDOWN_MS`    |                  `15000` | Drain window for active sessions on SIGTERM         |
+
+---
+
+# Kubernetes
+
+RTMPGate ships first-class Kubernetes packaging:
+
+- **Helm chart** — [`deploy/helm/rtmpgate`](deploy/helm/rtmpgate) (published as an OCI artifact
+  to `oci://ghcr.io/dersimeon/charts`):
+
+  ```bash
+  helm install rtmpgate oci://ghcr.io/dersimeon/charts/rtmpgate \
+    --version 0.1.0 \
+    --set secret.adminToken="$(openssl rand -hex 32)" \
+    --set secret.redisUrl="redis://my-redis:6379"
+  ```
+
+- **Kustomize** — see [`deploy/kustomize/README.md`](deploy/kustomize/README.md) for consuming
+  the chart via `helmCharts` inflation or a committed post-rendered base.
+
+The RTMP plane needs a `LoadBalancer`/`NodePort` (RTMP is not HTTP, so an Ingress cannot route
+it); the HTTP control plane is a ClusterIP kept internal. Liveness uses `/livez`, readiness
+uses `/readyz`, and rolling updates drain in-flight publishers via the graceful-shutdown window.
 
 ---
 
@@ -292,20 +326,37 @@ Recommended:
 - keep the HTTP API private
 - monitor `/metrics`
 - use managed Redis/Valkey infrastructure
-- run regular compatibility tests against OBS and ffmpeg
 
 ---
 
 # Compatibility
 
-| Publisher / Upstream | Status | Notes |
-|---|---|---|
-| ffmpeg | Tested | Included smoke test |
-| OBS Studio | Recommended manual validation | Standard RTMP publish flow |
-| Streamlabs | Recommended manual validation | OBS-derived RTMP flow |
-| Larix Broadcaster | Recommended manual validation | Mobile RTMP publisher |
-| MediaMTX upstream | Tested | Used during development |
-| nginx-rtmp upstream | Recommended manual validation | Common RTMP target |
+| Publisher / Upstream | Status | Notes                                           |
+|----------------------|--------|-------------------------------------------------|
+| ffmpeg               | Tested | Automated compatibility suite and soak coverage |
+| OBS Studio           | Tested | Manual compatibility validation completed       |
+| Streamlabs           | Tested | Manual compatibility validation completed       |
+| Larix Broadcaster    | Tested | Mobile RTMP validation completed                |
+| Livestream Studio    | Tested | Manual compatibility validation completed       |
+| MediaMTX upstream    | Tested | Used during development and soak testing        |
+| nginx-rtmp upstream  | Tested | Upstream relay validation completed             |
+
+---
+
+# Soak Test Matrix
+
+| Profile           | Streams |  Ramp | Video                | Audio   | Result | RTMPGate Peak CPU | RTMPGate Limits |
+|-------------------|--------:|------:|----------------------|---------|--------|-------------------|-----------------|
+| Tiny baseline     |     110 |  1.0s | 160x90 @ 5fps 80k    | 16k AAC | Passed | ~8%               | 1 CPU / 3 GB    |
+| Tiny high-density |     250 | 0.25s | 160x90 @ 5fps 80k    | 16k AAC | Passed | ~13%              | 1 CPU / 3 GB    |
+| 360p density      |     250 | 0.25s | 640x360 @ 10fps 350k | 32k AAC | Passed | ~46-57%           | 1 CPU / 3 GB    |
+
+All runs:
+- 0 failed streams
+- 0 probe failures
+- 0 restarts
+- MediaMTX upstream validation enabled
+- ffprobe validation enabled
 
 ---
 

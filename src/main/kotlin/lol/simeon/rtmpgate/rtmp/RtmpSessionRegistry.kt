@@ -19,6 +19,11 @@ class RtmpSessionRegistry {
             streamKey = null,
             target = null,
             state = "connected",
+            bytesIn = 0,
+            bytesOut = 0,
+            lastMessageType = null,
+            upstreamWritable = true,
+            backpressureSinceEpochMillis = null,
             channel = channel,
         )
         sessions[session.id] = session
@@ -37,6 +42,26 @@ class RtmpSessionRegistry {
         }
     }
 
+    fun updateRelayStats(
+        id: String,
+        bytesIn: Long,
+        bytesOut: Long,
+        lastMessageType: String?,
+        upstreamWritable: Boolean,
+        backpressureSinceEpochMillis: Long?,
+    ) {
+        sessions.computeIfPresent(id) { _, session ->
+            session.copy(
+                bytesIn = bytesIn,
+                bytesOut = bytesOut,
+                lastMessageType = lastMessageType,
+                upstreamWritable = upstreamWritable,
+                backpressureSinceEpochMillis = backpressureSinceEpochMillis,
+                channel = session.channel,
+            )
+        }
+    }
+
     fun unregister(id: String) {
         sessions.remove(id)
     }
@@ -45,6 +70,11 @@ class RtmpSessionRegistry {
         val session = sessions[id] ?: return false
         session.channel.close()
         return true
+    }
+
+    /** Closes every active session's channel. Used during graceful shutdown after the drain window. */
+    fun closeAll() {
+        sessions.values.forEach { runCatching { it.channel.close() } }
     }
 
     fun count(): Int = sessions.size
@@ -66,6 +96,11 @@ data class ActiveRtmpSession(
     val streamKey: String?,
     val target: String?,
     val state: String,
+    val bytesIn: Long,
+    val bytesOut: Long,
+    val lastMessageType: String?,
+    val upstreamWritable: Boolean,
+    val backpressureSinceEpochMillis: Long?,
     val channel: Channel,
 ) {
     fun toResponse(): ActiveRtmpSessionResponse = ActiveRtmpSessionResponse(
@@ -76,6 +111,11 @@ data class ActiveRtmpSession(
         streamKey = streamKey,
         target = target,
         state = state,
+        bytesIn = bytesIn,
+        bytesOut = bytesOut,
+        lastMessageType = lastMessageType,
+        upstreamWritable = upstreamWritable,
+        backpressureSinceEpochMillis = backpressureSinceEpochMillis,
     )
 }
 
@@ -88,4 +128,9 @@ data class ActiveRtmpSessionResponse(
     val streamKey: String?,
     val target: String?,
     val state: String,
+    val bytesIn: Long,
+    val bytesOut: Long,
+    val lastMessageType: String?,
+    val upstreamWritable: Boolean,
+    val backpressureSinceEpochMillis: Long?,
 )

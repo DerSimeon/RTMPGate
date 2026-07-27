@@ -69,6 +69,47 @@ class HttpServerTest {
     }
 
     @Test
+    fun `livez stays healthy while readyz reports not ready during shutdown`() = runBlocking {
+        val config = testConfig()
+        val appState = AppState().apply { beginShutdown() }
+        val engine = HttpServer(config, InMemoryRouteStore(), RtmpSessionRegistry(), appState).start(wait = false)
+
+        try {
+            val base = "http://127.0.0.1:${config.httpPort}"
+
+            val livez = request("GET", "$base/livez")
+            assertEquals(200, livez.statusCode())
+
+            val readyz = request("GET", "$base/readyz")
+            assertEquals(503, readyz.statusCode())
+            assertContains(readyz.body(), "\"shuttingDown\":true")
+        } finally {
+            engine.stop(1_000, 2_000)
+        }
+    }
+
+    @Test
+    fun `read endpoints require token when read auth is enabled`() = runBlocking {
+        val config = testConfig(adminToken = "secret", requireReadAuth = true)
+        val engine = HttpServer(config, InMemoryRouteStore(), RtmpSessionRegistry(), AppState()).start(wait = false)
+
+        try {
+            val base = "http://127.0.0.1:${config.httpPort}"
+
+            val unauthorized = request("GET", "$base/v1/routes")
+            assertEquals(401, unauthorized.statusCode())
+
+            val authorized = request("GET", "$base/v1/routes", token = "secret")
+            assertEquals(200, authorized.statusCode())
+
+            // Liveness/metrics stay open regardless of read-auth.
+            assertEquals(200, request("GET", "$base/livez").statusCode())
+        } finally {
+            engine.stop(1_000, 2_000)
+        }
+    }
+
+    @Test
     fun `write endpoints require bearer token when configured`() = runBlocking {
         val config = testConfig(adminToken = "secret")
         val engine = HttpServer(config, InMemoryRouteStore(), RtmpSessionRegistry(), AppState()).start(wait = false)

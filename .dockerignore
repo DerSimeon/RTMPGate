@@ -1,0 +1,12 @@
+.git
+.github
+.gradle
+.kotlin
+.idea
+build
+**/build
+deploy
+*.md
+docker-compose.yml
+RTMPGate.http
+.codegraph

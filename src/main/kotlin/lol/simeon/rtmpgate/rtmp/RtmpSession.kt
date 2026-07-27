@@ -7,12 +7,14 @@ import io.netty.channel.SimpleChannelInboundHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import lol.simeon.rtmpgate.config.AppConfig
 import lol.simeon.rtmpgate.metrics.RtmpGateMetrics
 import lol.simeon.rtmpgate.routes.RouteStore
 import lol.simeon.rtmpgate.runtime.AppState
 import org.slf4j.LoggerFactory
+import java.io.IOException
 import java.net.InetSocketAddress
 import kotlin.system.measureNanoTime
 
@@ -24,18 +26,32 @@ class RtmpSession(
 ) : SimpleChannelInboundHandler<ByteBuf>() {
     private val logger = LoggerFactory.getLogger(RtmpSession::class.java)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val codec = RtmpChunkCodec()
+    private val codec = RtmpChunkCodec(maxMessageBytes = config.maxRtmpMessageBytes)
     private val inputBuffer = Unpooled.buffer()
-    private val bufferedRelayMessages = mutableListOf<RtmpMessage>()
+    private val bufferedRelayMessages = mutableListOf<RtmpPacket>()
     private val relayLock = Any()
+    private var bufferedRelayBytes = 0L
 
+    // All mutable session state below is confined to the Netty channel event loop. The one
+    // background coroutine (upstream connect in startRelay) hops back via runOnEventLoop before
+    // touching any of it. sessionId/remoteAddress are set once in channelActive (event loop)
+    // and read from that coroutine for logging, so they are marked @Volatile for visibility.
     private var state = RtmpSessionState.WAIT_C0_C1
     private var appName = "live"
     private var clientStreamId = 1
     private var upstream: RtmpUpstreamClient? = null
     private var relayMetricOpen = false
+    @Volatile
     private var sessionId: String? = null
     private var closeReason = "client_disconnected"
+    private var currentStreamKey: String? = null
+    private var currentTarget: String? = null
+    @Volatile
+    private var remoteAddress: String = "unknown"
+    private var bytesInTotal = 0L
+    private var bytesOutTotal = 0L
+    private var lastMessageType: String? = null
+    private var backpressureSince: Long? = null
 
     override fun channelActive(ctx: ChannelHandlerContext) {
         if (appState.isShuttingDown()) {
@@ -44,6 +60,7 @@ class RtmpSession(
         }
 
         val remoteIp = ((ctx.channel().remoteAddress() as? InetSocketAddress)?.address?.hostAddress) ?: "unknown"
+        remoteAddress = remoteIp
 
         if (config.maxActiveSessions > 0 && sessionRegistry.count() >= config.maxActiveSessions) {
             reject(ctx, "max_sessions")
@@ -62,10 +79,49 @@ class RtmpSession(
 
     override fun channelRead0(ctx: ChannelHandlerContext, msg: ByteBuf) {
         inputBuffer.writeBytes(msg)
+
+        // Guard against a client that dribbles an incomplete oversized message to exhaust heap.
+        if (inputBuffer.readableBytes() > config.maxInputBufferBytes) {
+            closeReason = "input_buffer_exceeded"
+            logger.warn(
+                "Closing RTMP session: unparsed input exceeded limit sessionId={} remote={} bytes={} limit={}",
+                sessionId,
+                remoteAddress,
+                inputBuffer.readableBytes(),
+                config.maxInputBufferBytes,
+            )
+            close(ctx)
+            return
+        }
+
         runCatching { drain(ctx) }
             .onFailure { error ->
-                closeReason = "protocol_error"
-                logger.warn("Closing RTMP session: {}", error.message)
+                val message = error.message.orEmpty()
+                val isDisconnect =
+                    error is IOException &&
+                            (
+                                    message.contains("Broken pipe", ignoreCase = true) ||
+                                            message.contains("Connection reset", ignoreCase = true) ||
+                                            message.contains("Connection reset by peer", ignoreCase = true)
+                                    )
+
+                closeReason = if (isDisconnect) {
+                    "client_disconnected"
+                } else {
+                    "protocol_error"
+                }
+
+                logger.warn(
+                    "Closing RTMP session sessionId={} streamKey={} target={} remote={} reason={} errorType={} message={}",
+                    sessionId,
+                    currentStreamKey,
+                    currentTarget,
+                    remoteAddress,
+                    closeReason,
+                    error::class.simpleName,
+                    error.message,
+                )
+
                 close(ctx)
             }
 
@@ -75,11 +131,39 @@ class RtmpSession(
     }
 
     override fun exceptionCaught(ctx: ChannelHandlerContext, cause: Throwable) {
+        val message = cause.message.orEmpty()
+
+        if (
+            cause is IOException &&
+            (message.contains("Broken pipe", ignoreCase = true) ||
+                    message.contains("Connection reset", ignoreCase = true))
+        ) {
+            closeReason = "client_disconnected"
+            logger.info(
+                "RTMP client disconnected sessionId={} streamKey={} target={} remote={} reason={} message={}",
+                sessionId,
+                currentStreamKey,
+                currentTarget,
+                remoteAddress,
+                closeReason,
+                message,
+            )
+            close(ctx)
+            return
+        }
+
         closeReason = "connection_error"
         if (config.rtmpDebug) {
             logger.warn("RTMP session error", cause)
         } else {
-            logger.info("RTMP session closed after connection error: {}", cause.message)
+            logger.info(
+                "RTMP session closed after connection error sessionId={} streamKey={} target={} remote={} message={}",
+                sessionId,
+                currentStreamKey,
+                currentTarget,
+                remoteAddress,
+                message,
+            )
         }
         close(ctx)
     }
@@ -91,12 +175,30 @@ class RtmpSession(
             RtmpGateMetrics.relayClosed()
         }
 
+        logger.info(
+            "RTMP session inactive sessionId={} streamKey={} target={} remote={} reason={}",
+            sessionId,
+            currentStreamKey,
+            currentTarget,
+            remoteAddress,
+            closeReason,
+        )
+
         sessionId?.let(sessionRegistry::unregister)
         RtmpGateMetrics.sessionClosed(closeReason)
+
+        synchronized(relayLock) {
+            bufferedRelayMessages.forEach(RtmpPacket::release)
+            bufferedRelayMessages.clear()
+            bufferedRelayBytes = 0
+        }
 
         if (inputBuffer.refCnt() > 0) {
             inputBuffer.release()
         }
+
+        // Cancel the per-session coroutine (upstream connect) so it cannot outlive the channel.
+        scope.cancel()
     }
 
     private fun drain(ctx: ChannelHandlerContext) {
@@ -107,8 +209,8 @@ class RtmpSession(
                 RtmpSessionState.WAIT_C0_C1 -> drainC0C1(ctx)
                 RtmpSessionState.WAIT_C2 -> drainC2()
                 RtmpSessionState.WAIT_PUBLISH -> drainPublish(ctx)
-                RtmpSessionState.STARTING_UPSTREAM -> drainStartingUpstream()
-                RtmpSessionState.RELAYING -> drainRelaying()
+                RtmpSessionState.STARTING_UPSTREAM -> drainStartingUpstream(ctx)
+                RtmpSessionState.RELAYING -> drainRelaying(ctx)
                 RtmpSessionState.CLOSED -> false
             }
 
@@ -133,62 +235,149 @@ class RtmpSession(
     }
 
     private fun drainPublish(ctx: ChannelHandlerContext): Boolean {
-        val messages = readMessagesOrNull() ?: return false
+        val messages = readPacketsOrNull() ?: return false
 
         handleHandshakeMessages(ctx, messages)
         return true
     }
 
-    private fun drainStartingUpstream(): Boolean {
-        val messages = readMessagesOrNull() ?: return false
+    private fun drainStartingUpstream(ctx: ChannelHandlerContext): Boolean {
+        val messages = readPacketsOrNull() ?: return false
         val relayableMessages = messages.filter { it.isRelayableMedia() }
 
         synchronized(relayLock) {
-            bufferedRelayMessages += relayableMessages
+            relayableMessages.forEach { message ->
+                bufferedRelayMessages += message
+                bufferedRelayBytes += message.payloadSize.toLong()
+            }
+
+            RtmpGateMetrics.startupBuffer(
+                bufferedRelayMessages.size.toLong(),
+                bufferedRelayBytes,
+            )
+
+            val exceededMessages = bufferedRelayMessages.size > config.startupBufferMessages
+            val exceededBytes = bufferedRelayBytes > config.startupBufferBytes
+
+            if (exceededMessages || exceededBytes) {
+                logger.warn(
+                    "Startup buffer exceeded sessionId={} streamKey={} messages={} bytes={}",
+                    sessionId,
+                    currentStreamKey,
+                    bufferedRelayMessages.size,
+                    bufferedRelayBytes,
+                )
+
+                RtmpGateMetrics.startupBufferExceeded()
+                closeReason = "startup_buffer_exceeded"
+                close(ctx)
+                return false
+            }
         }
 
         return true
     }
 
-    private fun drainRelaying(): Boolean {
-        val messages = readMessagesOrNull() ?: return false
+    private fun drainRelaying(ctx: ChannelHandlerContext): Boolean {
+        val messages = readPacketsOrNull() ?: return false
         val client = upstream ?: return false
 
         messages
             .filter { it.isRelayableMedia() }
-            .forEach { message -> relayMessage(client, message) }
+            .forEach { message ->
+                try {
+                    relayMessage(ctx, client, message)
+                } finally {
+                    message.release()
+                }
+            }
 
         return true
     }
 
-    private fun readMessagesOrNull(): List<RtmpMessage>? {
-        val messages = codec.readMessages(inputBuffer)
-        return messages.ifEmpty { null }
+    private fun readPacketsOrNull(): List<RtmpPacket>? {
+        val packets = codec.readPackets(inputBuffer)
+        return packets.ifEmpty { null }
     }
 
-    private fun relayMessage(client: RtmpUpstreamClient, message: RtmpMessage) {
-        val payloadSize = message.payload.size.toLong()
+    private fun relayMessage(ctx: ChannelHandlerContext, client: RtmpUpstreamClient, message: RtmpPacket) {
+        client.failure()?.let { error ->
+            logger.warn(
+                "Closing RTMP session: upstream writer failed sessionId={} streamKey={} target={} message={}",
+                sessionId,
+                currentStreamKey,
+                currentTarget,
+                error.message,
+            )
+            closeReason = "upstream_unavailable"
+            close(ctx)
+            return
+        }
 
+        if (client.isBackpressured()) {
+            if (ctx.channel().config().isAutoRead) {
+                ctx.channel().config().isAutoRead = false
+                backpressureSince = System.currentTimeMillis()
+                RtmpGateMetrics.backpressureEvent()
+                logger.warn(
+                    "Pausing RTMP inbound reads sessionId={} streamKey={} queueBytes={}",
+                    sessionId,
+                    currentStreamKey,
+                    client.queueBytes(),
+                )
+            }
+
+            val blockedFor = backpressureSince?.let { System.currentTimeMillis() - it } ?: 0
+            if (blockedFor > config.backpressureTimeoutMillis) {
+                RtmpGateMetrics.backpressureDisconnect()
+                closeReason = "upstream_backpressure_timeout"
+                close(ctx)
+                return
+            }
+        } else if (!ctx.channel().config().isAutoRead) {
+            ctx.channel().config().isAutoRead = true
+            backpressureSince = null
+            logger.info(
+                "Resuming RTMP inbound reads sessionId={} streamKey={}",
+                sessionId,
+                currentStreamKey,
+            )
+        }
+
+        val payloadSize = message.payloadSize.toLong()
+        bytesInTotal += payloadSize
         RtmpGateMetrics.bytesIn(payloadSize)
+        RtmpGateMetrics.mediaMessageRelayed(message.typeId)
         client.writeMedia(message)
+        bytesOutTotal += payloadSize
         RtmpGateMetrics.bytesOut(payloadSize)
+        sessionId?.let {
+            sessionRegistry.updateRelayStats(
+                id = it,
+                bytesIn = bytesInTotal,
+                bytesOut = bytesOutTotal,
+                lastMessageType = message.typeName(),
+                upstreamWritable = !client.isBackpressured(),
+                backpressureSinceEpochMillis = backpressureSince,
+            )
+        }
     }
 
-    private fun handleHandshakeMessages(ctx: ChannelHandlerContext, messages: List<RtmpMessage>) {
+    private fun handleHandshakeMessages(ctx: ChannelHandlerContext, messages: List<RtmpPacket>) {
         for (message in messages) {
-            debug("RTMP message type={} streamId={} payloadSize={}", message.typeId, message.streamId, message.payload.size)
+            debug("RTMP message type={} streamId={} payloadSize={}", message.typeId, message.streamId, message.payloadSize)
 
             when (message.typeId) {
                 RtmpConstants.MSG_SET_CHUNK_SIZE -> debug("Client changed inbound chunk size")
 
                 RtmpConstants.MSG_COMMAND_AMF0, RtmpConstants.MSG_COMMAND_AMF3 -> {
-                    codec.command(message)?.let { command -> handleCommand(ctx, message, command) }
+                    codec.command(message.toMessage())?.let { command -> handleCommand(ctx, message, command) }
                 }
             }
         }
     }
 
-    private fun handleCommand(ctx: ChannelHandlerContext, message: RtmpMessage, command: RtmpCommand) {
+    private fun handleCommand(ctx: ChannelHandlerContext, message: RtmpPacket, command: RtmpCommand) {
         debug(
             "RTMP command name={} transactionId={} app={} streamKey={}",
             command.name,
@@ -232,6 +421,7 @@ class RtmpSession(
                     return
                 }
 
+                currentStreamKey = streamKey
                 startRelay(ctx, RtmpPublishInfo(app = appName, streamKey = streamKey, clientStreamId = clientStreamId))
             }
         }
@@ -243,6 +433,9 @@ class RtmpSession(
         state = RtmpSessionState.STARTING_UPSTREAM
         sessionId?.let { sessionRegistry.updatePublish(it, publishInfo.streamKey, target = null, state = "starting_upstream") }
 
+        // The route lookup (suspend) and the upstream RTMP connect (blocking socket I/O) run off
+        // the event loop. Every subsequent mutation of session state and every ctx write is
+        // hopped back onto the event loop via runOnEventLoop so the handler stays single-threaded.
         scope.launch {
             var route: lol.simeon.rtmpgate.routes.RouteRecord? = null
             val lookupNanos = measureNanoTime {
@@ -250,17 +443,28 @@ class RtmpSession(
             }
             RtmpGateMetrics.routeLookup(lookupNanos)
 
-            if (route == null) {
-                logger.info("Rejecting stream key {} because no route exists", publishInfo.streamKey)
+            val resolved = route
+            if (resolved == null) {
                 RtmpGateMetrics.publishRejected("unknown_stream_key")
-                closeReason = "unknown_stream_key"
-                ctx.writeAndFlush(RtmpServerResponses.publishRejected(publishInfo.clientStreamId, publishInfo.streamKey))
-                    .addListener { close(ctx) }
+                runOnEventLoop(ctx) {
+                    logger.info(
+                        "Rejecting stream key because no route exists sessionId={} streamKey={} remote={}",
+                        sessionId,
+                        publishInfo.streamKey,
+                        remoteAddress,
+                    )
+                    closeReason = "unknown_stream_key"
+                    ctx.writeAndFlush(RtmpServerResponses.publishRejected(publishInfo.clientStreamId, publishInfo.streamKey))
+                        .addListener { close(ctx) }
+                }
                 return@launch
             }
 
-            val target = route.target
-            sessionId?.let { sessionRegistry.updatePublish(it, publishInfo.streamKey, target, "connecting_upstream") }
+            val target = resolved.target
+            runOnEventLoop(ctx) {
+                currentTarget = target
+                sessionId?.let { sessionRegistry.updatePublish(it, publishInfo.streamKey, target, "connecting_upstream") }
+            }
 
             runCatching {
                 val client = RtmpUpstreamClient(
@@ -270,38 +474,93 @@ class RtmpSession(
                     config = config,
                 )
                 client.connectAndPublish()
-                upstream = client
-
-                ctx.writeAndFlush(RtmpServerResponses.publishStart(publishInfo.clientStreamId, publishInfo.streamKey))
-
-                val toFlush = synchronized(relayLock) {
-                    val copy = bufferedRelayMessages.toList()
-                    bufferedRelayMessages.clear()
-                    copy
-                }
-                toFlush.forEach {
-                    RtmpGateMetrics.bytesIn(it.payload.size.toLong())
-                    client.writeMedia(it)
-                    RtmpGateMetrics.bytesOut(it.payload.size.toLong())
-                }
-
-                state = RtmpSessionState.RELAYING
-                sessionId?.let { sessionRegistry.updatePublish(it, publishInfo.streamKey, target, "relaying") }
-                relayMetricOpen = true
-                RtmpGateMetrics.publishAccepted()
-                logger.info("Relaying streamKey={} target={}", publishInfo.streamKey, target)
+                client
+            }.onSuccess { client ->
+                runOnEventLoop(ctx) { onUpstreamReady(ctx, publishInfo, target, client) }
             }.onFailure { error ->
-                logger.warn("Failed to start upstream relay streamKey={} target={}: {}", publishInfo.streamKey, target, error.message)
                 RtmpGateMetrics.upstreamFailure()
                 RtmpGateMetrics.publishRejected("upstream_unavailable")
-                closeReason = "upstream_unavailable"
-                ctx.writeAndFlush(RtmpServerResponses.publishRejected(publishInfo.clientStreamId, publishInfo.streamKey))
-                    .addListener { close(ctx) }
+                runOnEventLoop(ctx) {
+                    logger.error(
+                        "Failed to start upstream relay sessionId={} streamKey={} target={} remote={} errorType={} message={}",
+                        sessionId,
+                        publishInfo.streamKey,
+                        target,
+                        remoteAddress,
+                        error::class.simpleName,
+                        error.message,
+                        error,
+                    )
+                    closeReason = "upstream_unavailable"
+                    ctx.writeAndFlush(RtmpServerResponses.publishRejected(publishInfo.clientStreamId, publishInfo.streamKey))
+                        .addListener { close(ctx) }
+                }
             }
         }
     }
 
-    private fun RtmpMessage.isRelayableMedia(): Boolean {
+    /** Runs on the event loop after the upstream connection is established. */
+    private fun onUpstreamReady(
+        ctx: ChannelHandlerContext,
+        publishInfo: RtmpPublishInfo,
+        target: String,
+        client: RtmpUpstreamClient,
+    ) {
+        // The client channel may have closed while we were connecting upstream.
+        if (state == RtmpSessionState.CLOSED) {
+            client.close()
+            return
+        }
+
+        upstream = client
+        ctx.writeAndFlush(RtmpServerResponses.publishStart(publishInfo.clientStreamId, publishInfo.streamKey))
+
+        val toFlush = synchronized(relayLock) {
+            val copy = bufferedRelayMessages.toList()
+            bufferedRelayMessages.clear()
+            bufferedRelayBytes = 0
+            RtmpGateMetrics.startupBuffer(0, 0)
+            copy
+        }
+        toFlush.forEach {
+            try {
+                RtmpGateMetrics.bytesIn(it.payloadSize.toLong())
+                client.writeMedia(it)
+                RtmpGateMetrics.mediaMessageRelayed(it.typeId)
+                RtmpGateMetrics.bytesOut(it.payloadSize.toLong())
+            } finally {
+                it.release()
+            }
+        }
+
+        state = RtmpSessionState.RELAYING
+        sessionId?.let { sessionRegistry.updatePublish(it, publishInfo.streamKey, target, "relaying") }
+        relayMetricOpen = true
+        RtmpGateMetrics.publishAccepted()
+        logger.info(
+            "Relaying sessionId={} streamKey={} target={} remote={}",
+            sessionId,
+            publishInfo.streamKey,
+            target,
+            remoteAddress,
+        )
+    }
+
+    private fun runOnEventLoop(ctx: ChannelHandlerContext, block: () -> Unit) {
+        val loop = ctx.channel().eventLoop()
+        if (loop.inEventLoop()) block() else loop.execute { block() }
+    }
+
+    private fun RtmpPacket.typeName(): String {
+        return when (typeId) {
+            RtmpConstants.MSG_AUDIO -> "audio"
+            RtmpConstants.MSG_VIDEO -> "video"
+            RtmpConstants.MSG_DATA_AMF0, RtmpConstants.MSG_DATA_AMF3 -> "metadata"
+            else -> "type_$typeId"
+        }
+    }
+
+    private fun RtmpPacket.isRelayableMedia(): Boolean {
         return typeId == RtmpConstants.MSG_AUDIO ||
             typeId == RtmpConstants.MSG_VIDEO ||
             typeId == RtmpConstants.MSG_DATA_AMF0 ||

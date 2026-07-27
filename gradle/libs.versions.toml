@@ -9,7 +9,6 @@ coroutines = "1.11.0"
 serialization = "1.11.0"
 lettuce = "7.5.1.RELEASE"
 caffeine = "3.2.4"
-micrometer = "1.17.0-RC1"
 logback = "1.5.32"
 junit = "5.14.1"
 
@@ -40,9 +39,6 @@ caffeine = { module = "com.github.ben-manes.caffeine:caffeine", version.ref = "c
 
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
-
-micrometer-core = { module = "io.micrometer:micrometer-core", version.ref = "micrometer" }
-micrometer-prometheus = { module = "io.micrometer:micrometer-registry-prometheus", version.ref = "micrometer" }
 
 logback-classic = { module = "ch.qos.logback:logback-classic", version.ref = "logback" }
 
