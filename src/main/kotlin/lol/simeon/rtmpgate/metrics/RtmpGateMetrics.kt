@@ -17,6 +17,15 @@ object RtmpGateMetrics {
     private val bytesOut = AtomicLong()
     private val routeLookupNanos = AtomicLong()
     private val routeLookupCount = AtomicLong()
+    private val startupBufferExceeded = AtomicLong()
+    private val startupBufferedMessages = AtomicLong()
+    private val startupBufferedBytes = AtomicLong()
+    private val backpressureEvents = AtomicLong()
+    private val backpressureDisconnects = AtomicLong()
+    private val relayWriteQueueBytes = AtomicLong()
+    private val audioMessagesRelayed = AtomicLong()
+    private val videoMessagesRelayed = AtomicLong()
+    private val metadataMessagesRelayed = AtomicLong()
     private val closeReasons = ConcurrentHashMap<String, AtomicLong>()
 
     fun sessionAccepted() {
@@ -65,6 +74,37 @@ object RtmpGateMetrics {
         bytesOut.addAndGet(bytes.coerceAtLeast(0))
     }
 
+
+    fun startupBuffer(messageCount: Long, byteCount: Long) {
+        startupBufferedMessages.set(messageCount.coerceAtLeast(0))
+        startupBufferedBytes.set(byteCount.coerceAtLeast(0))
+    }
+
+    fun startupBufferExceeded() {
+        startupBufferExceeded.incrementAndGet()
+    }
+
+    fun backpressureEvent() {
+        backpressureEvents.incrementAndGet()
+    }
+
+    fun backpressureDisconnect() {
+        backpressureDisconnects.incrementAndGet()
+    }
+
+    fun relayWriteQueueBytes(bytes: Long) {
+        relayWriteQueueBytes.set(bytes.coerceAtLeast(0))
+    }
+
+    fun mediaMessageRelayed(typeId: Int) {
+        when (typeId) {
+            lol.simeon.rtmpgate.rtmp.RtmpConstants.MSG_AUDIO -> audioMessagesRelayed.incrementAndGet()
+            lol.simeon.rtmpgate.rtmp.RtmpConstants.MSG_VIDEO -> videoMessagesRelayed.incrementAndGet()
+            lol.simeon.rtmpgate.rtmp.RtmpConstants.MSG_DATA_AMF0,
+            lol.simeon.rtmpgate.rtmp.RtmpConstants.MSG_DATA_AMF3 -> metadataMessagesRelayed.incrementAndGet()
+        }
+    }
+
     fun routeLookup(durationNanos: Long) {
         routeLookupNanos.addAndGet(durationNanos.coerceAtLeast(0))
         routeLookupCount.incrementAndGet()
@@ -88,6 +128,15 @@ object RtmpGateMetrics {
         bytesOut = bytesOut.get(),
         routeLookupCount = routeLookupCount.get(),
         routeLookupNanos = routeLookupNanos.get(),
+        startupBufferExceeded = startupBufferExceeded.get(),
+        startupBufferedMessages = startupBufferedMessages.get(),
+        startupBufferedBytes = startupBufferedBytes.get(),
+        backpressureEvents = backpressureEvents.get(),
+        backpressureDisconnects = backpressureDisconnects.get(),
+        relayWriteQueueBytes = relayWriteQueueBytes.get(),
+        audioMessagesRelayed = audioMessagesRelayed.get(),
+        videoMessagesRelayed = videoMessagesRelayed.get(),
+        metadataMessagesRelayed = metadataMessagesRelayed.get(),
         closeReasons = closeReasons.mapValues { it.value.get() },
     )
 
@@ -105,6 +154,15 @@ object RtmpGateMetrics {
             appendCounter("rtmpgate_bytes_out_total", s.bytesOut)
             appendCounter("rtmpgate_route_lookup_count", s.routeLookupCount)
             appendCounter("rtmpgate_route_lookup_duration_seconds_total", s.routeLookupNanos / 1_000_000_000.0)
+            appendCounter("rtmpgate_startup_buffer_exceeded_total", s.startupBufferExceeded)
+            appendGauge("rtmpgate_startup_buffer_messages", s.startupBufferedMessages)
+            appendGauge("rtmpgate_startup_buffer_bytes", s.startupBufferedBytes)
+            appendCounter("rtmpgate_backpressure_events_total", s.backpressureEvents)
+            appendCounter("rtmpgate_backpressure_disconnects_total", s.backpressureDisconnects)
+            appendGauge("rtmpgate_relay_write_queue_bytes", s.relayWriteQueueBytes)
+            appendLabeledCounter("rtmpgate_media_messages_relayed_total", "type", "audio", s.audioMessagesRelayed)
+            appendLabeledCounter("rtmpgate_media_messages_relayed_total", "type", "video", s.videoMessagesRelayed)
+            appendLabeledCounter("rtmpgate_media_messages_relayed_total", "type", "metadata", s.metadataMessagesRelayed)
             appendGauge("rtmpgate_active_sessions", s.activeSessions)
             appendGauge("rtmpgate_active_relays", s.activeRelays)
             s.closeReasons.forEach { (reason, value) ->
@@ -117,6 +175,16 @@ object RtmpGateMetrics {
     private fun StringBuilder.appendCounter(name: String, value: Number) {
         appendLine("# TYPE $name counter")
         appendLine("$name $value")
+    }
+
+    private fun StringBuilder.appendLabeledCounter(
+        name: String,
+        labelName: String,
+        labelValue: String,
+        value: Number,
+    ) {
+        appendLine("# TYPE $name counter")
+        appendLine("$name{$labelName=\"$labelValue\"} $value")
     }
 
     private fun StringBuilder.appendGauge(name: String, value: Number) {
@@ -141,5 +209,14 @@ data class MetricsSnapshot(
     val bytesOut: Long,
     val routeLookupCount: Long,
     val routeLookupNanos: Long,
+    val startupBufferExceeded: Long,
+    val startupBufferedMessages: Long,
+    val startupBufferedBytes: Long,
+    val backpressureEvents: Long,
+    val backpressureDisconnects: Long,
+    val relayWriteQueueBytes: Long,
+    val audioMessagesRelayed: Long,
+    val videoMessagesRelayed: Long,
+    val metadataMessagesRelayed: Long,
     val closeReasons: Map<String, Long>,
 )

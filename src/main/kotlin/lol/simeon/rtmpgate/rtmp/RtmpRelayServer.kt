@@ -2,6 +2,7 @@ package lol.simeon.rtmpgate.rtmp
 
 import io.netty.bootstrap.ServerBootstrap
 import io.netty.channel.ChannelOption
+import io.netty.channel.WriteBufferWaterMark
 import io.netty.channel.MultiThreadIoEventLoopGroup
 import io.netty.channel.nio.NioIoHandler
 import io.netty.channel.socket.nio.NioServerSocketChannel
@@ -29,6 +30,13 @@ class RtmpRelayServer(
                 .childOption(ChannelOption.SO_KEEPALIVE, true)
                 .childOption(ChannelOption.TCP_NODELAY, true)
                 .childOption(ChannelOption.AUTO_READ, true)
+.childOption(
+                    ChannelOption.WRITE_BUFFER_WATER_MARK,
+                    WriteBufferWaterMark(
+                        config.upstreamLowWatermarkBytes,
+                        config.upstreamHighWatermarkBytes,
+                    ),
+                )
                 .childHandler(RtmpChannelInitializer(config, routeStore, sessionRegistry, appState))
 
             val channel = bootstrap.bind(config.rtmpHost, config.rtmpPort).sync().channel()
@@ -39,12 +47,6 @@ class RtmpRelayServer(
             bossGroup.shutdownGracefully()
             workerGroup.shutdownGracefully()
             throw error
-        }
-    }
-
-    fun startBlocking() {
-        start().use { handle ->
-            handle.awaitClose()
         }
     }
 }

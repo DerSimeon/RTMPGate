@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "rtmpgate.fullname" . }}
+  labels:
+    {{- include "rtmpgate.labels" . | nindent 4 }}
+data:
+  RTMPGATE_HTTP_HOST: {{ .Values.config.httpHost | quote }}
+  RTMPGATE_HTTP_PORT: {{ .Values.config.httpPort | quote }}
+  RTMPGATE_RTMP_HOST: {{ .Values.config.rtmpHost | quote }}
+  RTMPGATE_RTMP_PORT: {{ .Values.config.rtmpPort | quote }}
+  RTMPGATE_STORAGE: {{ .Values.config.storage | quote }}
+  RTMPGATE_ROUTE_CACHE_SECONDS: {{ .Values.config.routeCacheSeconds | quote }}
+  RTMPGATE_TARGET_HOST_ALLOWLIST: {{ .Values.config.targetHostAllowlist | quote }}
+  RTMPGATE_MAX_ACTIVE_SESSIONS: {{ .Values.config.maxActiveSessions | quote }}
+  RTMPGATE_MAX_SESSIONS_PER_IP: {{ .Values.config.maxSessionsPerIp | quote }}
+  RTMPGATE_CONNECT_TIMEOUT_MS: {{ .Values.config.connectTimeoutMs | quote }}
+  RTMPGATE_READ_TIMEOUT_MS: {{ .Values.config.readTimeoutMs | quote }}
+  RTMPGATE_RTMP_DEBUG: {{ .Values.config.rtmpDebug | quote }}
+  RTMPGATE_REQUIRE_READ_AUTH: {{ .Values.config.requireReadAuth | quote }}
+  RTMPGATE_MAX_INPUT_BUFFER_BYTES: {{ .Values.config.maxInputBufferBytes | quote }}
+  RTMPGATE_MAX_RTMP_MESSAGE_BYTES: {{ .Values.config.maxRtmpMessageBytes | quote }}
+  RTMPGATE_STARTUP_BUFFER_BYTES: {{ .Values.config.startupBufferBytes | quote }}
+  RTMPGATE_STARTUP_BUFFER_MESSAGES: {{ .Values.config.startupBufferMessages | quote }}
+  RTMPGATE_GRACEFUL_SHUTDOWN_MS: {{ .Values.config.gracefulShutdownMs | quote }}
+  {{- range $key, $value := .Values.config.extraEnv }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}

@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "RTMPGate Helm values",
+  "type": "object",
+  "properties": {
+    "replicaCount": { "type": "integer", "minimum": 1 },
+    "image": {
+      "type": "object",
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      },
+      "required": ["repository"]
+    },
+    "config": {
+      "type": "object",
+      "properties": {
+        "storage": { "type": "string", "enum": ["redis", "valkey", "memory"] },
+        "httpPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "rtmpPort": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "requireReadAuth": { "type": "boolean" },
+        "rtmpDebug": { "type": "boolean" },
+        "maxActiveSessions": { "type": "integer", "minimum": 0 },
+        "maxSessionsPerIp": { "type": "integer", "minimum": 0 },
+        "gracefulShutdownMs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "secret": {
+      "type": "object",
+      "properties": {
+        "create": { "type": "boolean" },
+        "existingSecret": { "type": "string" },
+        "adminToken": { "type": "string" },
+        "redisUrl": { "type": "string" }
+      }
+    },
+    "service": {
+      "type": "object",
+      "properties": {
+        "rtmp": {
+          "type": "object",
+          "properties": {
+            "type": { "type": "string", "enum": ["LoadBalancer", "NodePort", "ClusterIP"] },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+          }
+        },
+        "http": {
+          "type": "object",
+          "properties": {
+            "type": { "type": "string", "enum": ["LoadBalancer", "NodePort", "ClusterIP"] },
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+          }
+        }
+      }
+    },
+    "autoscaling": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "minReplicas": { "type": "integer", "minimum": 1 },
+        "maxReplicas": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "podDisruptionBudget": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" }
+      }
+    }
+  }
+}

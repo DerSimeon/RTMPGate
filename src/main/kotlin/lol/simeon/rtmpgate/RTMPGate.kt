@@ -1,9 +1,5 @@
 package lol.simeon.rtmpgate
 
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.launch
 import lol.simeon.rtmpgate.config.AppConfig
 import lol.simeon.rtmpgate.http.HttpServer
 import lol.simeon.rtmpgate.routes.CachedRouteStore
@@ -18,7 +14,6 @@ import org.slf4j.LoggerFactory
 fun main() {
     val logger = LoggerFactory.getLogger("RTMPGate")
     val config = AppConfig.fromEnvironment()
-    val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val appState = AppState()
     val sessionRegistry = RtmpSessionRegistry()
 
@@ -48,17 +43,44 @@ fun main() {
         appState = appState,
     )
 
+    // Start HTTP without blocking so we retain the engine handle for an orderly stop.
+    val httpEngine = httpServer.start(wait = false)
+    val rtmpHandle = rtmpRelayServer.start()
+
     Runtime.getRuntime().addShutdownHook(
         Thread {
-            logger.info("Shutting down RTMPGate")
+            logger.info("Shutting down RTMPGate (graceful window {}ms)", config.gracefulShutdownMillis)
+
+            // 1. Flip readiness to 503 so load balancers stop routing new traffic to this pod.
             appState.beginShutdown()
+
+            // 2. Stop accepting new RTMP connections; existing sessions keep relaying.
+            rtmpHandle.stopAccepting()
+
+            // 3. Drain active sessions, up to the grace window.
+            val deadline = System.currentTimeMillis() + config.gracefulShutdownMillis
+            while (sessionRegistry.count() > 0 && System.currentTimeMillis() < deadline) {
+                Thread.sleep(DRAIN_POLL_MILLIS)
+            }
+
+            val remaining = sessionRegistry.count()
+            if (remaining > 0) {
+                logger.warn("Force-closing {} RTMP session(s) after grace window", remaining)
+                sessionRegistry.closeAll()
+            }
+
+            // 4. Tear down transports and the control plane, then close the route store.
+            runCatching { rtmpHandle.close() }
+            runCatching { httpEngine.stop(HTTP_STOP_GRACE_MILLIS, config.gracefulShutdownMillis) }
             runCatching { routeStore.close() }
+
+            logger.info("RTMPGate shutdown complete")
         },
     )
 
-    appScope.launch {
-        httpServer.start(wait = true)
-    }
-
-    rtmpRelayServer.startBlocking()
+    // Block the main thread until the RTMP listener channel closes.
+    rtmpHandle.awaitClose()
 }
+
+private const val DRAIN_POLL_MILLIS = 100L
+private const val HTTP_STOP_GRACE_MILLIS = 1_000L

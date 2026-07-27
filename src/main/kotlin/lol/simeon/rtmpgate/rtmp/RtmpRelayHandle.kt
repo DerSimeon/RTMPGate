@@ -15,6 +15,14 @@ class RtmpRelayHandle(
         channel.closeFuture().sync()
     }
 
+    /**
+     * Closes the listening socket so no new RTMP connections are accepted, while leaving the
+     * event-loop groups (and therefore existing sessions) running for graceful draining.
+     */
+    fun stopAccepting() {
+        runCatching { channel.close().syncUninterruptibly() }
+    }
+
     override fun close() {
         runCatching { channel.close().syncUninterruptibly() }
         runCatching { bossGroup.shutdownGracefully().syncUninterruptibly() }

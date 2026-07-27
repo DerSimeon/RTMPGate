@@ -1,0 +1,29 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "rtmpgate.fullname" . }}-rtmp
+  labels:
+    {{- include "rtmpgate.labels" . | nindent 4 }}
+    app.kubernetes.io/component: rtmp
+  {{- with .Values.service.rtmp.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.rtmp.type }}
+  {{- if and (eq .Values.service.rtmp.type "LoadBalancer") .Values.service.rtmp.loadBalancerIP }}
+  loadBalancerIP: {{ .Values.service.rtmp.loadBalancerIP }}
+  {{- end }}
+  {{- if and (ne .Values.service.rtmp.type "ClusterIP") .Values.service.rtmp.externalTrafficPolicy }}
+  externalTrafficPolicy: {{ .Values.service.rtmp.externalTrafficPolicy }}
+  {{- end }}
+  selector:
+    {{- include "rtmpgate.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: rtmp
+      port: {{ .Values.service.rtmp.port }}
+      targetPort: rtmp
+      protocol: TCP
+      {{- if and (eq .Values.service.rtmp.type "NodePort") .Values.service.rtmp.nodePort }}
+      nodePort: {{ .Values.service.rtmp.nodePort }}
+      {{- end }}

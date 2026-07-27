@@ -1,0 +1,30 @@
+RTMPGate {{ .Chart.AppVersion }} has been deployed as release "{{ .Release.Name }}".
+
+RTMP ingest ({{ .Values.service.rtmp.type }}):
+{{- if eq .Values.service.rtmp.type "LoadBalancer" }}
+  Get the external address (may take a moment to provision):
+    kubectl get svc {{ include "rtmpgate.fullname" . }}-rtmp -n {{ .Release.Namespace }} -w
+  Publishers connect to:  rtmp://<EXTERNAL-IP>:{{ .Values.service.rtmp.port }}/live/<stream-key>
+{{- else if eq .Values.service.rtmp.type "NodePort" }}
+  Publishers connect to:  rtmp://<NODE-IP>:{{ .Values.service.rtmp.nodePort | default "<assigned-nodePort>" }}/live/<stream-key>
+{{- else }}
+  Service type is ClusterIP — reachable only inside the cluster.
+{{- end }}
+
+HTTP control plane (ClusterIP, internal):
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "rtmpgate.fullname" . }} {{ .Values.service.http.port }}:{{ .Values.service.http.port }}
+  Then: curl http://127.0.0.1:{{ .Values.service.http.port }}/livez
+
+{{- if not .Values.secret.adminToken }}
+{{- if not .Values.secret.existingSecret }}
+
+WARNING: no adminToken is set — write endpoints (route/session management) are UNAUTHENTICATED.
+Set secret.adminToken (or secret.existingSecret) before exposing the HTTP API.
+{{- end }}
+{{- end }}
+
+Create a route (requires the admin token if configured):
+  curl -X PUT http://127.0.0.1:{{ .Values.service.http.port }}/v1/routes/my-key \
+    -H "Authorization: Bearer <admin-token>" \
+    -H "Content-Type: application/json" \
+    -d '{"target":"rtmp://upstream.internal:1935/live/target-id"}'

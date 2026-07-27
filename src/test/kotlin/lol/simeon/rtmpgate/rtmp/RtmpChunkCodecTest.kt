@@ -4,8 +4,26 @@ import io.netty.buffer.Unpooled
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 class RtmpChunkCodecTest {
+    @Test
+    fun `rejects messages whose declared length exceeds the limit`() {
+        val payload = ByteArray(600) { index -> (index % 251).toByte() }
+        val message = RtmpMessage(
+            timestamp = 1,
+            typeId = RtmpConstants.MSG_VIDEO,
+            streamId = 1,
+            payload = payload,
+        )
+
+        val encoded = RtmpChunkCodec().encode(message, chunkStreamId = 6)
+
+        assertFailsWith<IllegalStateException> {
+            RtmpChunkCodec(maxMessageBytes = 128).readMessages(encoded)
+        }
+    }
+
     @Test
     fun `roundtrips long message split into default chunks`() {
         val payload = ByteArray(600) { index -> (index % 251).toByte() }
