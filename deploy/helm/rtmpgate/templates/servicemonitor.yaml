@@ -3,6 +3,7 @@ apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: {{ include "rtmpgate.fullname" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "rtmpgate.labels" . | nindent 4 }}
     {{- with .Values.metrics.serviceMonitor.labels }}
