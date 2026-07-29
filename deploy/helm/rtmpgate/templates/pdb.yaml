@@ -3,6 +3,7 @@ apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
   name: {{ include "rtmpgate.fullname" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "rtmpgate.labels" . | nindent 4 }}
 spec:
