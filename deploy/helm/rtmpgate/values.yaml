@@ -1,7 +1,7 @@
 # Default values for rtmpgate.
 # This is a YAML-formatted file. See deploy/helm/rtmpgate/README.md for a full reference.
 
-replicaCount: 2
+replicaCount: 1
 
 image:
   repository: ghcr.io/dersimeon/rtmpgate
@@ -114,7 +114,7 @@ terminationGracePeriodSeconds: 45
 
 autoscaling:
   enabled: false
-  minReplicas: 2
+  minReplicas: 1
   maxReplicas: 5
   targetCPUUtilizationPercentage: 70
   targetMemoryUtilizationPercentage: null
@@ -137,6 +137,9 @@ metrics:
 # Pod / container hardening (defaults are strict; image runs as non-root uid).
 podSecurityContext:
   runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
   seccompProfile:
     type: RuntimeDefault
 securityContext:

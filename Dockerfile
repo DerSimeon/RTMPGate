@@ -19,12 +19,12 @@ RUN ./gradlew --no-daemon shadowJar
 FROM eclipse-temurin:25-jre-alpine AS runtime
 
 # wget (busybox) is used by the container HEALTHCHECK.
-RUN addgroup -S rtmpgate && adduser -S -G rtmpgate -h /app rtmpgate
+RUN addgroup -S -g 10001 rtmpgate && adduser -S -u 10001 -G rtmpgate -h /app rtmpgate
 
 WORKDIR /app
 COPY --from=build /build/build/libs/*-all.jar /app/rtmpgate.jar
 
-USER rtmpgate
+USER 10001
 
 EXPOSE 8080 1935
 
