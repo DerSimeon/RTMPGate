@@ -89,7 +89,8 @@ class RtmpChunkCodec(
         val chunkStart = readChunkStart(input) ?: return RtmpChunkReadResult.Incomplete
         val previous = streams[chunkStart.chunkStreamId]
         val header = readHeader(input, chunkStart.format, previous) ?: return RtmpChunkReadResult.Incomplete
-        val effectiveHeader = readExtendedTimestamp(input, header) ?: return RtmpChunkReadResult.Incomplete
+        val effectiveHeader = readExtendedTimestamp(input, chunkStart.format, previous, header)
+            ?: return RtmpChunkReadResult.Incomplete
         val state = nextState(chunkStart.format, previous, effectiveHeader)
         return readPayload(input, chunkStart.chunkStreamId, state)
     }
@@ -141,11 +142,29 @@ class RtmpChunkCodec(
         }
     }
 
-    private fun readExtendedTimestamp(input: ByteBuf, header: RtmpChunkHeader): RtmpChunkHeader? {
+    private fun readExtendedTimestamp(
+        input: ByteBuf,
+        format: Int,
+        previous: RtmpChunkStreamState?,
+        header: RtmpChunkHeader,
+    ): RtmpChunkHeader? {
         if (!header.extendedTimestamp) return header
         if (input.readableBytes() < 4) return null
 
-        return header.copy(timestamp = input.readInt())
+        val extendedTimestamp = input.readInt()
+
+        return when (format) {
+            0 -> header.copy(timestamp = extendedTimestamp)
+            1, 2 -> header.copy(
+                timestamp = previous?.header?.timestamp?.plus(extendedTimestamp) ?: return null,
+                timestampDelta = extendedTimestamp,
+            )
+            // A type-3 chunk repeats the extended field required by the inherited header.
+            // Its value does not change the already decoded header state: continuations keep
+            // their message timestamp, while new messages apply the inherited delta below.
+            3 -> header
+            else -> null
+        }
     }
 
     private fun nextState(
@@ -155,6 +174,9 @@ class RtmpChunkCodec(
     ): RtmpChunkStreamState {
         return when {
             format == 3 && previous != null && !previous.complete -> previous
+            format == 3 && previous != null -> RtmpChunkStreamState(
+                header = header.copy(timestamp = header.timestamp + header.timestampDelta),
+            )
             else -> RtmpChunkStreamState(header = header)
         }
     }
@@ -292,6 +314,7 @@ class RtmpChunkCodec(
 
         return RtmpChunkHeader(
             timestamp = timestamp,
+            timestampDelta = 0,
             length = input.readUnsignedMedium(),
             typeId = input.readUnsignedByte().toInt(),
             streamId = input.readIntLE(),
@@ -306,6 +329,7 @@ class RtmpChunkCodec(
 
         return RtmpChunkHeader(
             timestamp = previous.header.timestamp + delta,
+            timestampDelta = delta,
             length = input.readUnsignedMedium(),
             typeId = input.readUnsignedByte().toInt(),
             streamId = previous.header.streamId,
@@ -320,6 +344,7 @@ class RtmpChunkCodec(
 
         return previous.header.copy(
             timestamp = previous.header.timestamp + delta,
+            timestampDelta = delta,
             extendedTimestamp = delta == MAX_BASIC_TIMESTAMP,
         )
     }
