@@ -7,7 +7,7 @@ type: application
 version: 0.1.1
 
 # The default container image tag. Keep in sync with the published RTMPGate release.
-appVersion: "1.0.3"
+appVersion: "1.0.4"
 
 home: https://github.com/DerSimeon/RTMPGate
 sources:
