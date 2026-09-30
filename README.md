@@ -144,7 +144,7 @@ GET /health    # alias of /readyz (kept for backward compatibility)
 `/readyz` returns:
 
 - `200` when RTMPGate can accept traffic
-- `503` when storage is unavailable or the instance is shutting down
+- `503` when storage is unavailable, the instance is draining, or it is shutting down
 
 Use `/livez` for the Kubernetes liveness probe and `/readyz` for readiness — a storage outage
 should drain traffic (readiness) without restarting the pod (liveness).
@@ -158,6 +158,24 @@ GET /metrics
 ```
 
 Returns Prometheus-compatible metrics.
+
+For connection-safe maintenance, monitor `rtmpgate_draining` and
+`rtmpgate_active_sessions`. A drained instance remains live but is not ready and accepts no new
+RTMP connections.
+
+---
+
+## Drain an instance for planned maintenance
+
+```http
+POST /v1/drain
+Authorization: Bearer <token>
+```
+
+This one-way, idempotent operation immediately makes `/readyz` return `503` and closes the RTMP
+listener, so new publishers are sent to another pod. It does not terminate existing sessions.
+Wait for `rtmpgate_active_sessions` to reach zero before deleting the pod. `/livez` stays `200`
+while the process is running, so Kubernetes does not restart an intentionally drained pod.
 
 ---
 
@@ -229,12 +247,22 @@ GET /v1/sessions
 
 ---
 
-## Terminate a session
+## Force-close a session (emergency only)
 
 ```http
 DELETE /v1/sessions/{sessionId}
 Authorization: Bearer <token>
 ```
+
+Use this only for an exceptional stuck session. Add an optional URL-encoded audit reason:
+
+```http
+DELETE /v1/sessions/{sessionId}?reason=approved-maintenance-exception
+Authorization: Bearer <token>
+```
+
+The request is logged with the session ID and reason, and increments
+`rtmpgate_operator_force_close_requests_total`.
 
 ---
 

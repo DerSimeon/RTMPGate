@@ -27,6 +27,18 @@ object RtmpGateMetrics {
     private val videoMessagesRelayed = AtomicLong()
     private val metadataMessagesRelayed = AtomicLong()
     private val closeReasons = ConcurrentHashMap<String, AtomicLong>()
+    private val draining = AtomicLong()
+    private val drainRequests = AtomicLong()
+    private val operatorForceCloseRequests = AtomicLong()
+
+    fun drainStarted() {
+        draining.set(1)
+        drainRequests.incrementAndGet()
+    }
+
+    fun operatorForceCloseRequested() {
+        operatorForceCloseRequests.incrementAndGet()
+    }
 
     fun sessionAccepted() {
         sessionsAccepted.incrementAndGet()
@@ -138,6 +150,9 @@ object RtmpGateMetrics {
         videoMessagesRelayed = videoMessagesRelayed.get(),
         metadataMessagesRelayed = metadataMessagesRelayed.get(),
         closeReasons = closeReasons.mapValues { it.value.get() },
+        draining = draining.get(),
+        drainRequests = drainRequests.get(),
+        operatorForceCloseRequests = operatorForceCloseRequests.get(),
     )
 
     fun prometheus(): String {
@@ -165,6 +180,9 @@ object RtmpGateMetrics {
             appendLabeledCounter("rtmpgate_media_messages_relayed_total", "type", "metadata", s.metadataMessagesRelayed)
             appendGauge("rtmpgate_active_sessions", s.activeSessions)
             appendGauge("rtmpgate_active_relays", s.activeRelays)
+            appendGauge("rtmpgate_draining", s.draining)
+            appendCounter("rtmpgate_drain_requests_total", s.drainRequests)
+            appendCounter("rtmpgate_operator_force_close_requests_total", s.operatorForceCloseRequests)
             s.closeReasons.forEach { (reason, value) ->
                 appendLine("# TYPE rtmpgate_close_reasons_total counter")
                 appendLine("rtmpgate_close_reasons_total{reason=\"$reason\"} $value")
@@ -219,4 +237,7 @@ data class MetricsSnapshot(
     val videoMessagesRelayed: Long,
     val metadataMessagesRelayed: Long,
     val closeReasons: Map<String, Long>,
+    val draining: Long,
+    val drainRequests: Long,
+    val operatorForceCloseRequests: Long,
 )

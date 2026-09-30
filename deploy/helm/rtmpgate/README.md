@@ -29,17 +29,18 @@ RTMPGate exposes **two** planes, deployed as two Services:
   `LoadBalancer` (recommended `externalTrafficPolicy: Local` to preserve the client IP) or
   `NodePort`. The HTTP plane should stay internal; reach it via `kubectl port-forward` or an
   internal Ingress you add yourself.
-- Each publisher session is a long-lived TCP connection pinned to one pod. Rolling updates use
-  `maxUnavailable: 0` and a `terminationGracePeriodSeconds` larger than
-  `config.gracefulShutdownMs`, so the app drains in-flight publishers before exit (readiness
-  flips to 503 first, then sessions drain up to the grace window).
+- Each publisher session is a long-lived TCP connection pinned to one pod. For planned
+  maintenance, first call authenticated `POST /v1/drain` on one selected pod. It becomes unready
+  and stops accepting new RTMP connections while preserving existing sessions; wait for
+  `rtmpgate_active_sessions` to reach zero before deleting that pod. Do not rely on a deployment
+  rollout or SIGTERM to drain a long-lived session.
 
 ## Probes
 
 | Probe     | Path      | Notes                                                             |
 |-----------|-----------|------------------------------------------------------------------|
 | liveness  | `/livez`  | Process-only. Does **not** depend on Redis (avoids restart loops).|
-| readiness | `/readyz` | 503 when storage is down or the pod is shutting down.            |
+| readiness | `/readyz` | 503 when storage is down, the pod is draining, or it is shutting down. |
 | startup   | `/livez`  | Covers slow first Redis connect.                                 |
 
 ## Redis / Valkey

@@ -54,8 +54,8 @@ class RtmpSession(
     private var backpressureSince: Long? = null
 
     override fun channelActive(ctx: ChannelHandlerContext) {
-        if (appState.isShuttingDown()) {
-            reject(ctx, "shutting_down")
+        if (appState.isDraining()) {
+            reject(ctx, "draining")
             return
         }
 
@@ -174,6 +174,8 @@ class RtmpSession(
             relayMetricOpen = false
             RtmpGateMetrics.relayClosed()
         }
+
+        sessionId?.let { sessionRegistry.takeRequestedCloseReason(it) }?.let { closeReason = it }
 
         logger.info(
             "RTMP session inactive sessionId={} streamKey={} target={} remote={} reason={}",

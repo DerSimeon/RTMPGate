@@ -8,6 +8,7 @@ import java.util.concurrent.ConcurrentHashMap
 
 class RtmpSessionRegistry {
     private val sessions = ConcurrentHashMap<String, ActiveRtmpSession>()
+    private val requestedCloseReasons = ConcurrentHashMap<String, String>()
 
     fun register(channel: Channel): ActiveRtmpSession {
         val remoteAddress = channel.remoteAddress() as? InetSocketAddress
@@ -64,17 +65,21 @@ class RtmpSessionRegistry {
 
     fun unregister(id: String) {
         sessions.remove(id)
+        requestedCloseReasons.remove(id)
     }
 
-    fun close(id: String): Boolean {
+    fun close(id: String, reason: String = "operator_forced"): Boolean {
         val session = sessions[id] ?: return false
+        requestedCloseReasons[id] = reason
         session.channel.close()
         return true
     }
 
+    fun takeRequestedCloseReason(id: String): String? = requestedCloseReasons.remove(id)
+
     /** Closes every active session's channel. Used during graceful shutdown after the drain window. */
     fun closeAll() {
-        sessions.values.forEach { runCatching { it.channel.close() } }
+        sessions.keys.forEach { close(it, "shutdown_timeout") }
     }
 
     fun count(): Int = sessions.size
