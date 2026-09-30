@@ -42,6 +42,7 @@ class HttpServer(
     private val routeStore: RouteStore,
     private val sessionRegistry: RtmpSessionRegistry,
     private val appState: AppState,
+    private val stopAcceptingRtmp: () -> Unit = {},
 ) {
     private val logger = LoggerFactory.getLogger(HttpServer::class.java)
 
@@ -59,6 +60,7 @@ class HttpServer(
         routing {
             swaggerRoutes()
             serviceRoutes()
+            drainRoutes()
             routeRoutes()
             sessionRoutes()
         }
@@ -113,6 +115,24 @@ class HttpServer(
             call.respondText(
                 text = RtmpGateMetrics.prometheus(),
                 contentType = ContentType.Text.Plain,
+            )
+        }
+    }
+
+    private fun Routing.drainRoutes() {
+        post("/v1/drain") {
+            if (!HttpAuth.requireAdmin(call, config)) return@post
+
+            if (appState.beginDrain()) {
+                logger.warn("RTMPGate drain requested; stopping new RTMP connections while existing sessions continue")
+                stopAcceptingRtmp()
+            }
+
+            call.respond(
+                DrainResponse(
+                    draining = appState.isDraining(),
+                    activeSessions = sessionRegistry.count(),
+                ),
             )
         }
     }
@@ -229,7 +249,17 @@ class HttpServer(
             if (!HttpAuth.requireAdmin(call, config)) return@delete
 
             val sessionId = call.parameters["sessionId"].orEmpty()
-            val closed = sessionId.isNotBlank() && sessionRegistry.close(sessionId)
+            val auditReason = call.request.queryParameters["reason"]
+                ?.replace(Regex("\\p{Cntrl}"), " ")
+                ?.trim()
+                ?.take(128)
+                ?.takeIf { it.isNotBlank() }
+                ?: "operator_request"
+            val closed = sessionId.isNotBlank() && sessionRegistry.close(sessionId, auditReason)
+            if (closed) {
+                RtmpGateMetrics.operatorForceCloseRequested()
+                logger.warn("Operator force-closed RTMP session sessionId={} reason={}", sessionId, auditReason)
+            }
             call.respond(if (closed) HttpStatusCode.OK else HttpStatusCode.NotFound, DeleteSessionResponse(closed = closed))
         }
     }
@@ -254,12 +284,13 @@ class HttpServer(
 
     private suspend fun RoutingContext.respondHealth() {
         val storageReady = routeStore.isReady()
-        val acceptingTraffic = storageReady && !appState.isShuttingDown()
+        val acceptingTraffic = storageReady && !appState.isDraining()
         val response = HealthResponse(
             status = if (acceptingTraffic) "ok" else "not_ready",
             storage = if (storageReady) "ok" else "not_ready",
             acceptingTraffic = acceptingTraffic,
             activeSessions = sessionRegistry.count(),
+            draining = appState.isDraining(),
             shuttingDown = appState.isShuttingDown(),
         )
 
@@ -311,6 +342,12 @@ data class DeleteSessionResponse(
 )
 
 @Serializable
+data class DrainResponse(
+    val draining: Boolean,
+    val activeSessions: Int,
+)
+
+@Serializable
 data class ServiceInfoResponse(
     val name: String,
     val status: String,
@@ -329,6 +366,7 @@ data class HealthResponse(
     val storage: String,
     val acceptingTraffic: Boolean,
     val activeSessions: Int,
+    val draining: Boolean,
     val shuttingDown: Boolean,
 )
 

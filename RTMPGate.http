@@ -10,6 +10,10 @@ GET {{host}}/health
 ### Prometheus metrics
 GET {{host}}/metrics
 
+### Drain this instance for planned maintenance. Existing RTMP sessions continue.
+POST {{host}}/v1/drain
+Authorization: Bearer {{adminToken}}
+
 ### Upsert route with key in URL
 # This is the recommended request. The stream key is taken from the URL.
 PUT {{host}}/v1/routes/cgM28AHD
@@ -43,9 +47,8 @@ Authorization: Bearer {{adminToken}}
 ### List active RTMP sessions
 GET {{host}}/v1/sessions
 
-### Close active RTMP session
-# Replace the id before sending.
-DELETE {{host}}/v1/sessions/session-id-goes-here
+### Force-close an active RTMP session (emergency only). Replace the id before sending.
+DELETE {{host}}/v1/sessions/session-id-goes-here?reason=approved-maintenance-exception
 Authorization: Bearer {{adminToken}}
 
 ### Invalid stream key example, should return 400

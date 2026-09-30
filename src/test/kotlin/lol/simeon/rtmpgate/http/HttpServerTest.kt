@@ -9,6 +9,7 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -83,6 +84,47 @@ class HttpServerTest {
             val readyz = request("GET", "$base/readyz")
             assertEquals(503, readyz.statusCode())
             assertContains(readyz.body(), "\"shuttingDown\":true")
+        } finally {
+            engine.stop(1_000, 2_000)
+        }
+    }
+
+    @Test
+    fun `drain endpoint requires admin auth and makes readiness false without affecting liveness`() = runBlocking {
+        val config = testConfig(adminToken = "secret")
+        val appState = AppState()
+        val stopAcceptingCalls = AtomicInteger()
+        val engine = HttpServer(
+            config,
+            InMemoryRouteStore(),
+            RtmpSessionRegistry(),
+            appState,
+            stopAcceptingRtmp = stopAcceptingCalls::incrementAndGet,
+        ).start(wait = false)
+
+        try {
+            val base = "http://127.0.0.1:${config.httpPort}"
+
+            assertEquals(401, request("POST", "$base/v1/drain").statusCode())
+
+            val drain = request("POST", "$base/v1/drain", token = "secret")
+            assertEquals(200, drain.statusCode())
+            assertContains(drain.body(), "\"draining\":true")
+            assertContains(drain.body(), "\"activeSessions\":0")
+            assertEquals(1, stopAcceptingCalls.get())
+
+            // Drain is idempotent and must not close the listener a second time.
+            assertEquals(200, request("POST", "$base/v1/drain", token = "secret").statusCode())
+            assertEquals(1, stopAcceptingCalls.get())
+
+            assertEquals(200, request("GET", "$base/livez").statusCode())
+
+            val readyz = request("GET", "$base/readyz")
+            assertEquals(503, readyz.statusCode())
+            assertContains(readyz.body(), "\"draining\":true")
+
+            val metrics = request("GET", "$base/metrics")
+            assertContains(metrics.body(), "rtmpgate_draining 1")
         } finally {
             engine.stop(1_000, 2_000)
         }

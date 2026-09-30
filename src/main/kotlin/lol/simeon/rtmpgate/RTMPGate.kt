@@ -29,13 +29,6 @@ fun main() {
         backingStore
     }
 
-    val httpServer = HttpServer(
-        config = config,
-        routeStore = routeStore,
-        sessionRegistry = sessionRegistry,
-        appState = appState,
-    )
-
     val rtmpRelayServer = RtmpRelayServer(
         config = config,
         routeStore = routeStore,
@@ -43,9 +36,22 @@ fun main() {
         appState = appState,
     )
 
-    // Start HTTP without blocking so we retain the engine handle for an orderly stop.
-    val httpEngine = httpServer.start(wait = false)
     val rtmpHandle = rtmpRelayServer.start()
+    val httpServer = HttpServer(
+        config = config,
+        routeStore = routeStore,
+        sessionRegistry = sessionRegistry,
+        appState = appState,
+        stopAcceptingRtmp = rtmpHandle::stopAccepting,
+    )
+
+    // Start HTTP without blocking so we retain the engine handle for an orderly stop.
+    val httpEngine = try {
+        httpServer.start(wait = false)
+    } catch (error: Throwable) {
+        rtmpHandle.close()
+        throw error
+    }
 
     Runtime.getRuntime().addShutdownHook(
         Thread {

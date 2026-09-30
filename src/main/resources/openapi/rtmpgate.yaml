@@ -63,6 +63,28 @@ paths:
               schema:
                 type: string
 
+  /v1/drain:
+    post:
+      tags: [Service]
+      summary: Drain this RTMPGate instance for planned maintenance
+      description: >-
+        Requires bearer auth when RTMPGATE_ADMIN_TOKEN is configured. Stops accepting new RTMP
+        connections and makes readiness return 503, while preserving liveness and active RTMP
+        sessions. Draining is one-way; replace the pod after activeSessions reaches zero.
+      responses:
+        "200":
+          description: Instance is draining (the operation is idempotent).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DrainResponse"
+        "401":
+          description: Missing or invalid bearer token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /v1/routes:
     get:
       tags: [Routes]
@@ -217,8 +239,10 @@ paths:
   /v1/sessions/{sessionId}:
     delete:
       tags: [Sessions]
-      summary: Close an active RTMP session
-      description: Requires bearer auth when RTMPGATE_ADMIN_TOKEN is configured.
+      summary: Force-close an active RTMP session
+      description: >-
+        Requires bearer auth when RTMPGATE_ADMIN_TOKEN is configured. This is an operator-only
+        emergency action; it is logged and counted in Prometheus metrics.
       parameters:
         - name: sessionId
           in: path
@@ -226,6 +250,12 @@ paths:
           schema:
             type: string
           example: 2f9b2e5b-b8d0-44cc-8db3-4db5bbfcb9b6
+        - name: reason
+          in: query
+          required: false
+          description: Operator-provided audit reason recorded in the application log.
+          schema:
+            type: string
       responses:
         "200":
           description: Session closed
@@ -269,7 +299,7 @@ components:
 
     HealthResponse:
       type: object
-      required: [status, storage, acceptingTraffic, activeSessions, shuttingDown]
+      required: [status, storage, acceptingTraffic, activeSessions, draining, shuttingDown]
       properties:
         status:
           type: string
@@ -283,9 +313,23 @@ components:
         activeSessions:
           type: integer
           example: 0
+        draining:
+          type: boolean
+          example: false
         shuttingDown:
           type: boolean
           example: false
+
+    DrainResponse:
+      type: object
+      required: [draining, activeSessions]
+      properties:
+        draining:
+          type: boolean
+          example: true
+        activeSessions:
+          type: integer
+          example: 2
 
     RouteRecord:
       type: object

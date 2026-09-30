@@ -19,7 +19,8 @@ class RtmpSessionRegistryTest {
         assertEquals("key", listed.streamKey)
         assertEquals("relaying", listed.state)
 
-        assertTrue(registry.close(session.id))
+        assertTrue(registry.close(session.id, "operator_forced"))
+        assertEquals("operator_forced", registry.takeRequestedCloseReason(session.id))
         registry.unregister(session.id)
         assertEquals(0, registry.count())
     }
