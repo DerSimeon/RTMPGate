@@ -88,5 +88,5 @@ The chart is published as an OCI artifact to `oci://ghcr.io/dersimeon/charts` by
 ```bash
 helm lint deploy/helm/rtmpgate
 helm package deploy/helm/rtmpgate
-helm push rtmpgate-0.1.0.tgz oci://ghcr.io/dersimeon/charts
+helm push rtmpgate-<chart-version>.tgz oci://ghcr.io/dersimeon/charts
 ```
