@@ -9,7 +9,7 @@ plugins {
 }
 
 group = "lol.simeon"
-version = "1.0.5"
+version = "1.0.6"
 
 repositories {
     mavenCentral()
@@ -39,6 +39,8 @@ dependencies {
 
     testImplementation(libs.kotlin.test)
     testImplementation(libs.junit.jupiter)
+    // Log capture (ListAppender) in RTMP session tests.
+    testImplementation(libs.logback.classic)
 }
 
 kotlin {

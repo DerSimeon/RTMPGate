@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import lol.simeon.rtmpgate.config.AppConfig
 import lol.simeon.rtmpgate.metrics.RtmpGateMetrics
@@ -31,11 +32,13 @@ class RtmpSession(
     private val bufferedRelayMessages = mutableListOf<RtmpPacket>()
     private val relayLock = Any()
     private var bufferedRelayBytes = 0L
+    private val failover = UpstreamFailover(config)
 
-    // All mutable session state below is confined to the Netty channel event loop. The one
-    // background coroutine (upstream connect in startRelay) hops back via runOnEventLoop before
-    // touching any of it. sessionId/remoteAddress are set once in channelActive (event loop)
-    // and read from that coroutine for logging, so they are marked @Volatile for visibility.
+    // All mutable session state below is confined to the Netty channel event loop. The
+    // background coroutines (upstream connect in startRelay, upstream reconnect started by
+    // onUpstreamFailed) hop back via runOnEventLoop before touching any of it.
+    // sessionId/remoteAddress are set once in channelActive (event loop) and read from those
+    // coroutines for logging, so they are marked @Volatile for visibility.
     private var state = RtmpSessionState.WAIT_C0_C1
     private var appName = "live"
     private var clientStreamId = 1
@@ -52,6 +55,14 @@ class RtmpSession(
     private var bytesOutTotal = 0L
     private var lastMessageType: String? = null
     private var backpressureSince: Long? = null
+
+    // Set once the first upstream publish succeeds; needed to reconnect (see onUpstreamFailed).
+    private var publishInfo: RtmpPublishInfo? = null
+
+    // The upstream client whose blocking connect is in flight on a background coroutine. The
+    // channel closes it on teardown so a cancelled connect does not linger on its socket timeouts.
+    @Volatile
+    private var connectingClient: RtmpUpstreamClient? = null
 
     override fun channelActive(ctx: ChannelHandlerContext) {
         if (appState.isDraining()) {
@@ -170,10 +181,13 @@ class RtmpSession(
 
     override fun channelInactive(ctx: ChannelHandlerContext) {
         upstream?.close()
+        connectingClient?.close()
         if (relayMetricOpen) {
             relayMetricOpen = false
             RtmpGateMetrics.relayClosed()
         }
+        // Ends a reconnect gap still open, aborts its in-flight connect and frees cached headers.
+        failover.sessionClosed()
 
         sessionId?.let { sessionRegistry.takeRequestedCloseReason(it) }?.let { closeReason = it }
 
@@ -199,7 +213,8 @@ class RtmpSession(
             inputBuffer.release()
         }
 
-        // Cancel the per-session coroutine (upstream connect) so it cannot outlive the channel.
+        // Cancel the per-session coroutines (upstream connect and reconnect) so they cannot
+        // outlive the channel.
         scope.cancel()
     }
 
@@ -212,7 +227,7 @@ class RtmpSession(
                 RtmpSessionState.WAIT_C2 -> drainC2()
                 RtmpSessionState.WAIT_PUBLISH -> drainPublish(ctx)
                 RtmpSessionState.STARTING_UPSTREAM -> drainStartingUpstream(ctx)
-                RtmpSessionState.RELAYING -> drainRelaying(ctx)
+                RtmpSessionState.RELAYING, RtmpSessionState.UPSTREAM_RETRYING -> drainMedia(ctx)
                 RtmpSessionState.CLOSED -> false
             }
 
@@ -246,6 +261,7 @@ class RtmpSession(
     private fun drainStartingUpstream(ctx: ChannelHandlerContext): Boolean {
         val messages = readPacketsOrNull() ?: return false
         val relayableMessages = messages.filter { it.isRelayableMedia() }
+        relayableMessages.forEach(failover.relayResume::observe)
 
         synchronized(relayLock) {
             relayableMessages.forEach { message ->
@@ -280,21 +296,40 @@ class RtmpSession(
         return true
     }
 
-    private fun drainRelaying(ctx: ChannelHandlerContext): Boolean {
+    /**
+     * RELAYING and UPSTREAM_RETRYING. The state is re-checked for every packet: once a packet
+     * closes the session or moves it into the retry state, the rest of the batch is no longer
+     * relayed (so an upstream failure is handled, and logged, once). Every packet is released.
+     */
+    private fun drainMedia(ctx: ChannelHandlerContext): Boolean {
         val messages = readPacketsOrNull() ?: return false
-        val client = upstream ?: return false
 
-        messages
-            .filter { it.isRelayableMedia() }
-            .forEach { message ->
-                try {
-                    relayMessage(ctx, client, message)
-                } finally {
-                    message.release()
-                }
+        messages.forEach { message ->
+            try {
+                if (message.isRelayableMedia()) handleMediaMessage(ctx, message)
+            } finally {
+                message.release()
+            }
+        }
+
+        return state != RtmpSessionState.CLOSED
+    }
+
+    private fun handleMediaMessage(ctx: ChannelHandlerContext, message: RtmpPacket) {
+        when (state) {
+            RtmpSessionState.RELAYING -> {
+                failover.relayResume.observe(message)
+                relayMessage(ctx, message)
             }
 
-        return true
+            RtmpSessionState.UPSTREAM_RETRYING -> {
+                // Keep the encoder flowing but drop its media; nothing is buffered across the gap.
+                failover.relayResume.observe(message)
+                RtmpGateMetrics.upstreamRetryDroppedMessage()
+            }
+
+            else -> Unit
+        }
     }
 
     private fun readPacketsOrNull(): List<RtmpPacket>? {
@@ -302,20 +337,40 @@ class RtmpSession(
         return packets.ifEmpty { null }
     }
 
-    private fun relayMessage(ctx: ChannelHandlerContext, client: RtmpUpstreamClient, message: RtmpPacket) {
+    private fun relayMessage(ctx: ChannelHandlerContext, message: RtmpPacket) {
+        val client = upstream ?: return
         client.failure()?.let { error ->
-            logger.warn(
-                "Closing RTMP session: upstream writer failed sessionId={} streamKey={} target={} message={}",
-                sessionId,
-                currentStreamKey,
-                currentTarget,
-                error.message,
-            )
-            closeReason = "upstream_unavailable"
-            close(ctx)
+            onUpstreamFailed(ctx, error)
             return
         }
 
+        if (!applyBackpressure(ctx, client)) return
+        if (!failover.relayResume.admit(message)) return
+
+        val payloadSize = message.payloadSize.toLong()
+        bytesInTotal += payloadSize
+        RtmpGateMetrics.bytesIn(payloadSize)
+        if (!client.writeMedia(message)) {
+            onUpstreamFailed(ctx, client.failure())
+            return
+        }
+        RtmpGateMetrics.mediaMessageRelayed(message.typeId)
+        bytesOutTotal += payloadSize
+        RtmpGateMetrics.bytesOut(payloadSize)
+        sessionId?.let {
+            sessionRegistry.updateRelayStats(
+                id = it,
+                bytesIn = bytesInTotal,
+                bytesOut = bytesOutTotal,
+                lastMessageType = message.typeName(),
+                upstreamWritable = !client.isBackpressured(),
+                backpressureSinceEpochMillis = backpressureSince,
+            )
+        }
+    }
+
+    /** Pauses/resumes encoder reads on upstream backpressure. Returns false if the session was closed. */
+    private fun applyBackpressure(ctx: ChannelHandlerContext, client: RtmpUpstreamClient): Boolean {
         if (client.isBackpressured()) {
             if (ctx.channel().config().isAutoRead) {
                 ctx.channel().config().isAutoRead = false
@@ -334,35 +389,23 @@ class RtmpSession(
                 RtmpGateMetrics.backpressureDisconnect()
                 closeReason = "upstream_backpressure_timeout"
                 close(ctx)
-                return
+                return false
             }
         } else if (!ctx.channel().config().isAutoRead) {
-            ctx.channel().config().isAutoRead = true
-            backpressureSince = null
-            logger.info(
-                "Resuming RTMP inbound reads sessionId={} streamKey={}",
-                sessionId,
-                currentStreamKey,
-            )
+            resumeAutoRead(ctx)
         }
+        return true
+    }
 
-        val payloadSize = message.payloadSize.toLong()
-        bytesInTotal += payloadSize
-        RtmpGateMetrics.bytesIn(payloadSize)
-        RtmpGateMetrics.mediaMessageRelayed(message.typeId)
-        client.writeMedia(message)
-        bytesOutTotal += payloadSize
-        RtmpGateMetrics.bytesOut(payloadSize)
-        sessionId?.let {
-            sessionRegistry.updateRelayStats(
-                id = it,
-                bytesIn = bytesInTotal,
-                bytesOut = bytesOutTotal,
-                lastMessageType = message.typeName(),
-                upstreamWritable = !client.isBackpressured(),
-                backpressureSinceEpochMillis = backpressureSince,
-            )
-        }
+    private fun resumeAutoRead(ctx: ChannelHandlerContext) {
+        if (ctx.channel().config().isAutoRead) return
+        ctx.channel().config().isAutoRead = true
+        backpressureSince = null
+        logger.info(
+            "Resuming RTMP inbound reads sessionId={} streamKey={}",
+            sessionId,
+            currentStreamKey,
+        )
     }
 
     private fun handleHandshakeMessages(ctx: ChannelHandlerContext, messages: List<RtmpPacket>) {
@@ -430,7 +473,7 @@ class RtmpSession(
     }
 
     private fun startRelay(ctx: ChannelHandlerContext, publishInfo: RtmpPublishInfo) {
-        if (state == RtmpSessionState.STARTING_UPSTREAM || state == RtmpSessionState.RELAYING) return
+        if (state != RtmpSessionState.WAIT_PUBLISH) return
 
         state = RtmpSessionState.STARTING_UPSTREAM
         sessionId?.let { sessionRegistry.updatePublish(it, publishInfo.streamKey, target = null, state = "starting_upstream") }
@@ -468,18 +511,26 @@ class RtmpSession(
                 sessionId?.let { sessionRegistry.updatePublish(it, publishInfo.streamKey, target, "connecting_upstream") }
             }
 
+            var client: RtmpUpstreamClient? = null
             runCatching {
-                val client = RtmpUpstreamClient(
+                RtmpUpstreamClient(
                     targetUrl = target,
                     sourceApp = publishInfo.app,
                     sourceStreamKey = publishInfo.streamKey,
                     config = config,
-                )
-                client.connectAndPublish()
-                client
-            }.onSuccess { client ->
-                runOnEventLoop(ctx) { onUpstreamReady(ctx, publishInfo, target, client) }
+                ).also {
+                    client = it
+                    connectingClient = it
+                    it.connectAndPublish()
+                }
+            }.also {
+                connectingClient = null
+            }.onSuccess { connected ->
+                runOnEventLoop(ctx) { onUpstreamReady(ctx, publishInfo, target, connected) }
             }.onFailure { error ->
+                client?.close()
+                // The channel closed (and aborted the connect) while we were connecting.
+                if (!isActive) return@launch
                 RtmpGateMetrics.upstreamFailure()
                 RtmpGateMetrics.publishRejected("upstream_unavailable")
                 runOnEventLoop(ctx) {
@@ -515,6 +566,7 @@ class RtmpSession(
         }
 
         upstream = client
+        this.publishInfo = publishInfo
         ctx.writeAndFlush(RtmpServerResponses.publishStart(publishInfo.clientStreamId, publishInfo.streamKey))
 
         val toFlush = synchronized(relayLock) {
@@ -527,9 +579,12 @@ class RtmpSession(
         toFlush.forEach {
             try {
                 RtmpGateMetrics.bytesIn(it.payloadSize.toLong())
-                client.writeMedia(it)
-                RtmpGateMetrics.mediaMessageRelayed(it.typeId)
-                RtmpGateMetrics.bytesOut(it.payloadSize.toLong())
+                // A false return means the upstream already failed; the next relayed packet
+                // sees client.failure() and starts the reconnect.
+                if (client.writeMedia(it)) {
+                    RtmpGateMetrics.mediaMessageRelayed(it.typeId)
+                    RtmpGateMetrics.bytesOut(it.payloadSize.toLong())
+                }
             } finally {
                 it.release()
             }
@@ -546,6 +601,67 @@ class RtmpSession(
             target,
             remoteAddress,
         )
+    }
+
+    /**
+     * Event loop. The upstream failed while relaying. Instead of dropping the encoder, keep it
+     * connected and reconnect the upstream in the background for up to
+     * RTMPGATE_UPSTREAM_RETRY_WINDOW_MS. With the window set to 0 the session closes as before.
+     */
+    private fun onUpstreamFailed(ctx: ChannelHandlerContext, error: Throwable?) {
+        if (state != RtmpSessionState.RELAYING) return
+        val reason = error?.message ?: error?.let { it::class.simpleName } ?: "unknown upstream failure"
+        upstream?.close()
+        upstream = null
+
+        val info = publishInfo
+        val target = currentTarget
+        if (config.upstreamRetryWindowMillis <= 0 || info == null || target == null) {
+            logger.warn(
+                "Closing RTMP session: upstream writer failed sessionId={} streamKey={} target={} message={}",
+                sessionId,
+                currentStreamKey,
+                currentTarget,
+                reason,
+            )
+            closeReason = "upstream_unavailable"
+            close(ctx)
+            return
+        }
+
+        state = RtmpSessionState.UPSTREAM_RETRYING
+        // Keep reading the encoder (and dropping its media) even if backpressure had paused it.
+        resumeAutoRead(ctx)
+        sessionId?.let { sessionRegistry.updateState(it, "upstream_retrying") }
+
+        val request = failover.begin(sessionId, info, target, remoteAddress, reason)
+        scope.launch {
+            val result = failover.reconnect(request) ?: return@launch
+            runOnEventLoop(ctx) { onReconnectResult(ctx, result) }
+        }
+    }
+
+    /** Event loop. Resumes relaying on the new upstream, or closes the encoder once the window ran out. */
+    private fun onReconnectResult(ctx: ChannelHandlerContext, result: UpstreamReconnectResult) {
+        if (state != RtmpSessionState.UPSTREAM_RETRYING) {
+            (result as? UpstreamReconnectResult.Reconnected)?.client?.close()
+            return
+        }
+
+        when (result) {
+            is UpstreamReconnectResult.Reconnected -> {
+                upstream = result.client
+                failover.recovered(result.client, result.attempts)
+                state = RtmpSessionState.RELAYING
+                sessionId?.let { sessionRegistry.updateState(it, "relaying") }
+            }
+
+            is UpstreamReconnectResult.Exhausted -> {
+                failover.exhausted(result.attempts, result.lastReason)
+                closeReason = "upstream_unavailable"
+                close(ctx)
+            }
+        }
     }
 
     private fun runOnEventLoop(ctx: ChannelHandlerContext, block: () -> Unit) {

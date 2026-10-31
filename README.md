@@ -307,6 +307,21 @@ Stream keys:
 | `RTMPGATE_MAX_INPUT_BUFFER_BYTES`  |                `8388608` | Max unparsed inbound bytes before the session is cut |
 | `RTMPGATE_MAX_RTMP_MESSAGE_BYTES`  |               `16777216` | Max single RTMP message size accepted               |
 | `RTMPGATE_GRACEFUL_SHUTDOWN_MS`    |                  `15000` | Drain window for active sessions on SIGTERM         |
+| `RTMPGATE_WAIT_FOR_PUBLISH_START`  |                   `true` | Wait for the upstream's `NetStream.Publish.Start` before accepting the encoder's publish, and watch the upstream for error statuses afterwards. `false` restores the old send-and-assume behaviour |
+| `RTMPGATE_PUBLISH_CONFIRM_TIMEOUT_MS` |               `10000` | How long to wait for `NetStream.Publish.Start`     |
+| `RTMPGATE_UPSTREAM_RETRY_WINDOW_MS` |                `600000` | How long a relaying session keeps its encoder connected while reconnecting a failed upstream. `0` closes the encoder on the first upstream failure (old behaviour) |
+| `RTMPGATE_UPSTREAM_RETRY_BASE_DELAY_MS` |              `1000` | First reconnect backoff delay (doubles per attempt, with jitter) |
+| `RTMPGATE_UPSTREAM_RETRY_MAX_DELAY_MS` |              `15000` | Maximum reconnect backoff delay                     |
+
+While an upstream reconnect is in progress the encoder stays connected and its media is dropped
+(not buffered). After a reconnect, RTMPGate first resends the latest `@setDataFrame`/`onMetaData`
+and the AVC/AAC sequence headers, then forwards video from the next keyframe. Reconnects are
+visible in `rtmpgate_upstream_retry_episodes_total`, `rtmpgate_upstream_reconnect_attempts_total`,
+`rtmpgate_upstream_reconnect_outcomes_total{outcome="recovered|exhausted|encoder_closed"}`,
+`rtmpgate_upstream_retrying_sessions`, `rtmpgate_upstream_gap_duration_seconds_total` /
+`rtmpgate_upstream_gap_count`, `rtmpgate_upstream_retry_dropped_messages_total` and
+`rtmpgate_keyframe_wait_dropped_messages_total`, and the session state `upstream_retrying` in
+`GET /v1/sessions`.
 
 ---
 

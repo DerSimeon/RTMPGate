@@ -6,5 +6,8 @@ enum class RtmpSessionState {
     WAIT_PUBLISH,
     STARTING_UPSTREAM,
     RELAYING,
+    // Upstream failed while relaying: the encoder stays connected, its media is dropped
+    // and the upstream is reconnected in the background.
+    UPSTREAM_RETRYING,
     CLOSED,
 }

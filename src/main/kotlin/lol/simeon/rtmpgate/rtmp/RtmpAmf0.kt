@@ -43,6 +43,18 @@ object RtmpAmf0 {
                     )
                 }
 
+                "onStatus", "_error" -> {
+                    skipValue(input)
+                    val info = readStringProperties(input)
+                    RtmpCommand(
+                        name = name,
+                        transactionId = transactionId,
+                        level = info["level"],
+                        code = info["code"],
+                        description = info["description"],
+                    )
+                }
+
                 else -> RtmpCommand(name = name, transactionId = transactionId)
             }
         } finally {
@@ -133,6 +145,33 @@ object RtmpAmf0 {
             skipValue(input)
         }
         return null
+    }
+
+    /** Reads the string-valued properties of an AMF0 object; other values are skipped. */
+    private fun readStringProperties(input: ByteBuf): Map<String, String> {
+        if (!input.isReadable) return emptyMap()
+        val marker = input.readUnsignedByte().toInt()
+        if (marker != OBJECT && marker != ECMA_ARRAY) return emptyMap()
+        if (marker == ECMA_ARRAY && !input.skipIfReadable(4)) return emptyMap()
+
+        val properties = mutableMapOf<String, String>()
+        while (input.readableBytes() >= 3 && !isObjectEnd(input)) {
+            val key = readPropertyKey(input) ?: break
+            if (input.isReadable && input.getUnsignedByte(input.readerIndex()).toInt() == STRING) {
+                readString(input)?.let { properties[key] = it }
+            } else {
+                skipValue(input)
+            }
+        }
+        return properties
+    }
+
+    private fun readPropertyKey(input: ByteBuf): String? {
+        val keyLength = input.readUnsignedShort()
+        if (input.readableBytes() < keyLength) return null
+        val keyBytes = ByteArray(keyLength)
+        input.readBytes(keyBytes)
+        return String(keyBytes, StandardCharsets.UTF_8)
     }
 
     private fun skipValue(input: ByteBuf) {

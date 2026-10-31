@@ -30,6 +30,14 @@ object RtmpGateMetrics {
     private val draining = AtomicLong()
     private val drainRequests = AtomicLong()
     private val operatorForceCloseRequests = AtomicLong()
+    private val upstreamRetryEpisodes = AtomicLong()
+    private val upstreamReconnectAttempts = AtomicLong()
+    private val upstreamReconnectOutcomes = ConcurrentHashMap<String, AtomicLong>()
+    private val upstreamRetryingSessions = AtomicLong()
+    private val upstreamGapCount = AtomicLong()
+    private val upstreamGapMillis = AtomicLong()
+    private val upstreamRetryDroppedMessages = AtomicLong()
+    private val keyframeWaitDroppedMessages = AtomicLong()
 
     fun drainStarted() {
         draining.set(1)
@@ -117,6 +125,36 @@ object RtmpGateMetrics {
         }
     }
 
+    /** A relaying session lost its upstream and started a new reconnect window. */
+    fun upstreamRetryEpisodeStarted() {
+        upstreamRetryEpisodes.incrementAndGet()
+    }
+
+    /** A session entered the upstream-retrying state (gap start). */
+    fun upstreamGapStarted() {
+        upstreamRetryingSessions.incrementAndGet()
+    }
+
+    /** A gap ended. [outcome] is recovered, exhausted or encoder_closed. */
+    fun upstreamGapEnded(outcome: String, durationMillis: Long) {
+        upstreamRetryingSessions.updateAndGet { value -> (value - 1).coerceAtLeast(0) }
+        upstreamReconnectOutcomes.computeIfAbsent(outcome.sanitizeMetricLabel()) { AtomicLong() }.incrementAndGet()
+        upstreamGapCount.incrementAndGet()
+        upstreamGapMillis.addAndGet(durationMillis.coerceAtLeast(0))
+    }
+
+    fun upstreamReconnectAttempt() {
+        upstreamReconnectAttempts.incrementAndGet()
+    }
+
+    fun upstreamRetryDroppedMessage() {
+        upstreamRetryDroppedMessages.incrementAndGet()
+    }
+
+    fun keyframeWaitDroppedMessage() {
+        keyframeWaitDroppedMessages.incrementAndGet()
+    }
+
     fun routeLookup(durationNanos: Long) {
         routeLookupNanos.addAndGet(durationNanos.coerceAtLeast(0))
         routeLookupCount.incrementAndGet()
@@ -153,6 +191,14 @@ object RtmpGateMetrics {
         draining = draining.get(),
         drainRequests = drainRequests.get(),
         operatorForceCloseRequests = operatorForceCloseRequests.get(),
+        upstreamRetryEpisodes = upstreamRetryEpisodes.get(),
+        upstreamReconnectAttempts = upstreamReconnectAttempts.get(),
+        upstreamReconnectOutcomes = upstreamReconnectOutcomes.mapValues { it.value.get() },
+        upstreamRetryingSessions = upstreamRetryingSessions.get(),
+        upstreamGapCount = upstreamGapCount.get(),
+        upstreamGapMillis = upstreamGapMillis.get(),
+        upstreamRetryDroppedMessages = upstreamRetryDroppedMessages.get(),
+        keyframeWaitDroppedMessages = keyframeWaitDroppedMessages.get(),
     )
 
     fun prometheus(): String {
@@ -183,6 +229,16 @@ object RtmpGateMetrics {
             appendGauge("rtmpgate_draining", s.draining)
             appendCounter("rtmpgate_drain_requests_total", s.drainRequests)
             appendCounter("rtmpgate_operator_force_close_requests_total", s.operatorForceCloseRequests)
+            appendCounter("rtmpgate_upstream_retry_episodes_total", s.upstreamRetryEpisodes)
+            appendCounter("rtmpgate_upstream_reconnect_attempts_total", s.upstreamReconnectAttempts)
+            s.upstreamReconnectOutcomes.forEach { (outcome, value) ->
+                appendLabeledCounter("rtmpgate_upstream_reconnect_outcomes_total", "outcome", outcome, value)
+            }
+            appendGauge("rtmpgate_upstream_retrying_sessions", s.upstreamRetryingSessions)
+            appendCounter("rtmpgate_upstream_gap_count", s.upstreamGapCount)
+            appendCounter("rtmpgate_upstream_gap_duration_seconds_total", s.upstreamGapMillis / 1_000.0)
+            appendCounter("rtmpgate_upstream_retry_dropped_messages_total", s.upstreamRetryDroppedMessages)
+            appendCounter("rtmpgate_keyframe_wait_dropped_messages_total", s.keyframeWaitDroppedMessages)
             s.closeReasons.forEach { (reason, value) ->
                 appendLine("# TYPE rtmpgate_close_reasons_total counter")
                 appendLine("rtmpgate_close_reasons_total{reason=\"$reason\"} $value")
@@ -240,4 +296,12 @@ data class MetricsSnapshot(
     val draining: Long,
     val drainRequests: Long,
     val operatorForceCloseRequests: Long,
+    val upstreamRetryEpisodes: Long = 0,
+    val upstreamReconnectAttempts: Long = 0,
+    val upstreamReconnectOutcomes: Map<String, Long> = emptyMap(),
+    val upstreamRetryingSessions: Long = 0,
+    val upstreamGapCount: Long = 0,
+    val upstreamGapMillis: Long = 0,
+    val upstreamRetryDroppedMessages: Long = 0,
+    val keyframeWaitDroppedMessages: Long = 0,
 )
