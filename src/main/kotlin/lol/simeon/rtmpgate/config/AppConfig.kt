@@ -26,6 +26,15 @@ data class AppConfig(
     val upstreamLowWatermarkBytes: Int,
     val backpressureTimeoutMillis: Long,
     val upstreamWriteTimeoutMillis: Long,
+    // Wait for the upstream's onStatus NetStream.Publish.Start before treating a publish as live.
+    // Set RTMPGATE_WAIT_FOR_PUBLISH_START=false to restore the old send-and-assume behavior.
+    val waitForPublishStart: Boolean = true,
+    val publishConfirmTimeoutMillis: Int = 10_000,
+    // How long a relaying session keeps its encoder connected while reconnecting a failed
+    // upstream. 0 disables reconnects: the encoder session is closed on the first failure.
+    val upstreamRetryWindowMillis: Long = 600_000,
+    val upstreamRetryBaseDelayMillis: Long = 1_000,
+    val upstreamRetryMaxDelayMillis: Long = 15_000,
 ) {
     companion object {
         fun fromEnvironment(env: Map<String, String> = System.getenv()): AppConfig {
@@ -57,6 +66,11 @@ data class AppConfig(
                 upstreamLowWatermarkBytes = reader.int("RTMPGATE_UPSTREAM_LOW_WATERMARK_BYTES", 8 * 1024 * 1024),
                 backpressureTimeoutMillis = reader.long("RTMPGATE_BACKPRESSURE_TIMEOUT_MS", 10_000),
                 upstreamWriteTimeoutMillis = reader.long("RTMPGATE_UPSTREAM_WRITE_TIMEOUT_MS", 10_000),
+                waitForPublishStart = reader.boolean("RTMPGATE_WAIT_FOR_PUBLISH_START", default = true),
+                publishConfirmTimeoutMillis = reader.int("RTMPGATE_PUBLISH_CONFIRM_TIMEOUT_MS", 10_000),
+                upstreamRetryWindowMillis = reader.long("RTMPGATE_UPSTREAM_RETRY_WINDOW_MS", 600_000),
+                upstreamRetryBaseDelayMillis = reader.long("RTMPGATE_UPSTREAM_RETRY_BASE_DELAY_MS", 1_000),
+                upstreamRetryMaxDelayMillis = reader.long("RTMPGATE_UPSTREAM_RETRY_MAX_DELAY_MS", 15_000),
             )
         }
     }
@@ -74,6 +88,14 @@ private class EnvironmentReader(
     fun long(name: String, default: Long): Long = env[name]?.toLongOrNull() ?: default
 
     fun boolean(name: String): Boolean = env[name]?.equals("true", ignoreCase = true) == true
+
+    fun boolean(name: String, default: Boolean): Boolean {
+        return when (env[name]?.trim()?.lowercase()) {
+            "true" -> true
+            "false" -> false
+            else -> default
+        }
+    }
 
     fun csvSet(name: String): Set<String> {
         return env[name]

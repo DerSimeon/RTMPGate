@@ -39,6 +39,8 @@ dependencies {
 
     testImplementation(libs.kotlin.test)
     testImplementation(libs.junit.jupiter)
+    // Log capture (ListAppender) in RTMP session tests.
+    testImplementation(libs.logback.classic)
 }
 
 kotlin {
